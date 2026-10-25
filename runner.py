@@ -41,6 +41,7 @@ from .convert import (
     messages_to_plain_text,
 )
 from .webhook import WebhookServer, shared_server
+from .proactive import PassiveWindow, ProactiveDispatcher
 from .core_bridge import CoreBridge
 
 OP_DISPATCH = 0
@@ -188,6 +189,11 @@ class QQBotUID:
         self.tm = QQTokenManager(config)
         self.sender = QQSender(self.tm)
         self.material = QQMateriaHost(self.tm)
+        self.proactive = ProactiveDispatcher(
+            config.proactive_direct_interval,
+            config.proactive_group_interval,
+        )
+        self.passive = PassiveWindow()
         self._tasks: List[asyncio.Task[Any]] = []
         self._webhook: Optional[WebhookServer] = None
         self._ws = None
@@ -236,6 +242,7 @@ class QQBotUID:
         if self._webhook is not None:
             await self._webhook.remove(self.config.webhook_path)
             self._webhook = None
+        await self.proactive.close()
         await self.tm.aclose()
 
     async def deliver(self, send: MessageSend) -> None:
@@ -361,6 +368,7 @@ class QQBotUID:
             if self._skip_other_bot(payload):
                 return
             self._warn_unresolved_reference(payload, receive)
+            self.passive.mark(receive.msg_id)
             await self.bridge.push(receive)
 
     def _skip_other_bot(self, payload: Dict[str, Any]) -> bool:
@@ -412,6 +420,7 @@ class QQBotUID:
                 t("[QQBotUID] Webhook 事件 {event_type}: {raw}", event_type=body.get("t"), raw=brief_text(body, 1500))
             )
             if not self._skip_other_bot(body):
+                self.passive.mark(receive.msg_id)
                 await self.bridge.push(receive)
         if body.get("t") == "INTERACTION_CREATE":
             return web.json_response({"op": OP_CALLBACK_ACK, "code": 0})
@@ -485,8 +494,14 @@ class QQBotUID:
                 )
             )
             return None
+        if self.passive.usable(send.msg_id):
+            return await self.post_message(send, endpoint, send.msg_id)
+        self.proactive.submit(send.target_type, lambda: self.post_message(send, endpoint, ""))
+        return None
+
+    async def post_message(self, send: MessageSend, endpoint: str, msg_id: str) -> Optional[str]:
         try:
-            payload = await self.build_send_payload(send)
+            payload = await self.build_send_payload(send, msg_id)
             markdown_body = payload.get("markdown")
             has_markdown = isinstance(markdown_body, dict) and bool(str(markdown_body.get("content") or "").strip())
             if not payload.get("content") and not has_markdown and not payload.get("media"):
@@ -526,7 +541,7 @@ class QQBotUID:
                 message_ids.append(message_id)
         return message_ids or None
 
-    async def build_send_payload(self, send: MessageSend) -> Dict[str, Any]:
+    async def build_send_payload(self, send: MessageSend, msg_id: str) -> Dict[str, Any]:
         assert send.content is not None
         platform = self.config.platform_bot_id
         use_md = _platform_selected("SendMDPlatform", platform)
@@ -538,8 +553,8 @@ class QQBotUID:
         text = _strip_at(messages_to_plain_text(send.content), send.target_type or "")
 
         payload: Dict[str, Any] = {"msg_seq": _msg_seq()}
-        if send.msg_id:
-            payload["msg_id"] = send.msg_id
+        if msg_id:
+            payload["msg_id"] = msg_id
         reply_id = next((m for m in send.content if m.type == "reply_id" and m.data), None)
         if reply_id is not None:
             payload["message_reference"] = {
