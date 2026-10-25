@@ -1,0 +1,11 @@
+[project]
+name = "QQBotUID"
+version = "1.0.0"
+description = "一个适用于早柚的QQBot适配器"
+requires-python = ">=3.11"
+dependencies = [
+    "aiohttp>=3.8.1",
+    "cryptography>=45.0.5",
+    "httpx>=0.23.0",
+    "websockets>=13.1",
+]

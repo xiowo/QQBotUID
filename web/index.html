@@ -1,0 +1,117 @@
+<!doctype html>
+<html lang="zh-CN">
+
+<head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>QQBotUID</title>
+    <script src="/plugin-pages/_sdk/gshub-plugin.js"></script>
+    <script>
+        document.write('<link rel="stylesheet" href="./app.css?v=' + Date.now() + '">');
+    </script>
+</head>
+
+<body>
+    <div class="layout">
+        <aside class="sidebar">
+            <div class="brand"><span class="brand-icon">🦊</span><span>QQBotUID</span></div>
+            <nav class="nav" aria-label="页面导航">
+                <button class="nav-item active" type="button">
+                    <svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true">
+                        <rect x="4" y="7" width="16" height="12" rx="4" />
+                        <path d="M9 7V4" />
+                        <path d="M15 7V4" />
+                        <path d="M9 13h.01" />
+                        <path d="M15 13h.01" />
+                    </svg>
+                    <span>Bot 管理</span>
+                </button>
+            </nav>
+            <div class="sidebar-footer">
+                <div class="status-pill"><span class="status-dot"></span><span id="footerStatus">正在读取</span></div>
+            </div>
+        </aside>
+
+        <main class="main">
+            <header class="topbar">
+                <div>
+                    <h1 id="pageTitle">Bot 管理</h1>
+                    <p id="pageSubtitle">管理接入早柚核心的 QQ 官方机器人</p>
+                </div>
+                <div class="top-actions">
+                    <button id="openBindBtn" class="btn primary" type="button">扫码添加</button>
+                    <button id="refreshBtn" class="icon-btn" type="button" title="刷新" aria-label="刷新">↻</button>
+                </div>
+            </header>
+
+            <section class="content">
+                <div class="inner">
+                    <section id="page-bots" class="page active">
+                        <div class="section-head">
+                            <div>
+                                <h2>Bot 列表</h2>
+                                <p>一条记录对应一个 QQ 官方机器人，点卡片查看详情；所有机器人共用核心连接 QQBotUID，单独控制启用与运行模式。</p>
+                            </div>
+                            <span id="botCount" class="count">0 个已启用</span>
+                        </div>
+                        <div id="botList" class="bot-list">
+                            <div class="empty">正在读取 Bot…</div>
+                        </div>
+                    </section>
+                </div>
+            </section>
+        </main>
+    </div>
+
+    <div id="bindModal" class="modal" hidden>
+        <div class="modal-mask" data-close="1"></div>
+        <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="bindTitle">
+            <header class="modal-head">
+                <div>
+                    <h2 id="bindTitle">扫码添加机器人</h2>
+                    <p>用手机 QQ 扫码授权，完成后自动写入 AppID 与 Secret</p>
+                </div>
+                <button id="closeBind" class="icon-btn" type="button" title="关闭" aria-label="关闭">✕</button>
+            </header>
+            <div class="modal-body">
+                <div class="bind-qr">
+                    <img id="qrImg" class="qr" alt="绑定二维码" hidden />
+                    <div id="bindPlaceholder" class="qr-placeholder">正在生成二维码…</div>
+                </div>
+                <div class="bind-side">
+                    <p id="bindStatus" class="bind-status">正在向 QQ 申请绑定二维码…</p>
+                    <p class="hint">二维码 10 分钟内有效，授权完成后这里会自动刷新，不用手动点。</p>
+                    <div class="bind-actions">
+                        <button id="regenBind" class="btn" type="button">重新生成</button>
+                        <a id="bindLink" class="link" target="_blank" rel="noreferrer" hidden>在浏览器打开</a>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div id="detailModal" class="modal" hidden>
+        <div class="modal-mask" data-close="1"></div>
+        <div class="modal-card detail-card" role="dialog" aria-modal="true" aria-labelledby="detailTitle">
+            <header class="modal-head">
+                <div>
+                    <h2 id="detailTitle">机器人详情</h2>
+                    <p id="detailSubtitle">机器人自身信息</p>
+                </div>
+                <button id="closeDetail" class="icon-btn" type="button" title="关闭" aria-label="关闭">✕</button>
+            </header>
+            <div id="detailBody" class="modal-body detail-body">
+                <div class="detail-loading">正在读取机器人资料…</div>
+            </div>
+        </div>
+    </div>
+
+    <div id="saveDock" class="save-dock hidden"><span>配置有未保存的修改</span><button id="saveBtn" class="btn primary"
+            type="button">保存变更</button></div>
+    <div id="toast" class="toast" role="status"></div>
+    <script>
+        document.write('<script src="./app.js?v=' + Date.now() + '"><\/script>');
+    </script>
+</body>
+
+</html>
