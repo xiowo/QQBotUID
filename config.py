@@ -40,6 +40,28 @@ CONFIG_DEFAULT: dict[str, GSC] = {
         data=0,
         max_value=60000,
     ),
+    "_DividerDaemon": GsDivider("独立进程模式", ""),
+    "daemon_mode": GsBoolConfig(
+        title="启用独立进程",
+        desc="开启后由核心拉起独立的 daemon 进程承载适配器，核心启动/关闭时一并启停；关掉即回到同进程。",
+        data=False,
+    ),
+    "core_host": GsStrConfig(
+        title="核心地址",
+        desc="daemon 连接核心 WS 端点用的地址；核心和 daemon 同机时保持 127.0.0.1。",
+        data="127.0.0.1",
+    ),
+    "core_port": GsIntConfig(
+        title="核心端口",
+        desc="核心 Web 服务端口，要和核心配置里的 PORT 一致。",
+        data=8765,
+        max_value=65535,
+    ),
+    "core_token": GsStrConfig(
+        title="核心 WS Token",
+        desc="核心配置里的 WS_TOKEN；127.0.0.1 已在默认信任列表里，同机部署留空即可。",
+        data="",
+    ),
     "_DividerWebhook": GsDivider("Webhook", ""),
     "webhook_host": GsStrConfig(
         title="Webhook 监听地址",
@@ -196,6 +218,10 @@ class QQBotUIDConfig:
     ignore_bot_message: bool = True
     proactive_direct_interval: int = 110
     proactive_group_interval: int = 1010
+    daemon_mode: bool = False
+    core_host: str = "127.0.0.1"
+    core_port: int = 8765
+    core_token: str = ""
 
     @property
     def self_id(self) -> str:
@@ -223,6 +249,10 @@ class QQBotUIDConfig:
             ignore_bot_message=bool(qqbotuid_config.get_config("ignore_bot_message").data),
             proactive_direct_interval=_cfg_int(advanced_config, "proactive_direct_interval", 110),
             proactive_group_interval=_cfg_int(advanced_config, "proactive_group_interval", 1010),
+            daemon_mode=bool(qqbotuid_config.get_config("daemon_mode").data),
+            core_host=_cfg_str(qqbotuid_config, "core_host", "127.0.0.1"),
+            core_port=_cfg_int(qqbotuid_config, "core_port", 8765),
+            core_token=_cfg_str(qqbotuid_config, "core_token"),
         )
 
     def validate(self) -> None:

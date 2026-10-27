@@ -6,8 +6,9 @@ from gsuid_core.i18n import t
 from gsuid_core.logger import logger
 from gsuid_core.server import on_core_start, on_core_shutdown
 
-from .config import ROUTE_BOT_ID, get_qqbotuid_configs
+from .config import ROUTE_BOT_ID, QQBotUIDConfig, get_qqbotuid_configs
 from .runner import QQBotUID
+from .supervisor import DaemonSupervisor
 from .core_bridge import CoreBridge
 
 _RUNTIME_SLOT = "_qqbotuid_runtime"
@@ -19,8 +20,16 @@ class _Runtime:
         self._runtime_tag = RUNTIME_TAG
         self.bridge = CoreBridge(ROUTE_BOT_ID)
         self.adapters: list[QQBotUID] = []
+        self.supervisor = DaemonSupervisor()
 
     async def start(self) -> None:
+        base = QQBotUIDConfig.from_config()
+        if base.daemon_mode:
+            if not base.enabled:
+                logger.info(t("[QQBotUID] 总开关已关闭，跳过启动"))
+                return
+            await self.supervisor.start()
+            return
         configs = get_qqbotuid_configs()
         if not configs:
             logger.info(t("[QQBotUID] WebUI 配置开关已关闭，跳过启动"))
@@ -37,6 +46,7 @@ class _Runtime:
                 logger.exception(t("[QQBotUID] Bot 启动失败: appid={appid}, err={err}", appid=cfg.appid, err=e))
 
     async def stop(self) -> None:
+        await self.supervisor.stop()
         adapters, self.adapters = self.adapters, []
         for adapter in adapters:
             with contextlib.suppress(asyncio.CancelledError):
@@ -44,6 +54,9 @@ class _Runtime:
         await self.bridge.shutdown()
 
     async def restart(self) -> None:
+        if QQBotUIDConfig.from_config().daemon_mode and self.supervisor.running:
+            logger.info("[QQBotUID] 独立进程模式，配置改动交给 daemon 自己热重载")
+            return
         await self.stop()
         await self.start()
 

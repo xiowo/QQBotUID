@@ -38,7 +38,7 @@ def _build_scope(bot_id: str) -> Scope:
     }
 
 
-def _log_core_frame(msg_type: str, data: object) -> None:
+def log_core_frame(msg_type: str, data: object) -> None:
     level = msg_type[4:].lower()
     text = str(data or "")
     if level == "error":
@@ -152,7 +152,7 @@ class CoreBridge:
             return
         content = send.content or []
         if content and content[0].type is not None and content[0].type.startswith("log_"):
-            _log_core_frame(content[0].type, content[0].data)
+            log_core_frame(content[0].type, content[0].data)
             return
         if send.bot_self_id:
             target = self._targets.get(send.bot_self_id)

@@ -198,7 +198,7 @@ async def core_upload_image(raw: bytes) -> Optional[MaterialImage]:
     elif core_segment.SERVER == "local" and core_segment.pic_srv:
         send_type = "link_local"
     else:
-        logger.debug("[QQBotUID] 图片转链接已开启，但核心还没有图床客户端（改完配置需重启核心）")
+        logger.debug("[QQBotUID] 图片转链接已开启，但没拿到图床客户端（检查 PicUploader 是否配好）")
         return None
     try:
         messages = await core_segment._image_to_url(raw, send_type, Message(type="image", data=raw))
