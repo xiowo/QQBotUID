@@ -29,6 +29,7 @@ from .qq_api import (
     image_bytes,
     public_image_url,
     core_upload_image,
+    patch_image_fallback,
 )
 from .convert import (
     send_endpoint,
@@ -212,6 +213,7 @@ class QQBotUID:
     async def start(self) -> None:
         self.config.validate()
         self._closed = False
+        patch_image_fallback()
         self.bridge.add_target(self)
         try:
             if self.config.mode == "wh":

@@ -350,6 +350,7 @@ class Daemon:
             return
         refresh_upload_configs()
         importlib.reload(segment)
+        _module("qq_api").patch_image_fallback()
         if plugin_cfg != self._plugin_cfg:
             for name in _ACTIVE_UPLOAD_PLUGINS:
                 restart_upload_plugin(name)

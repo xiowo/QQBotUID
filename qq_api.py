@@ -5,7 +5,7 @@ import asyncio
 import hashlib
 import binascii
 from io import BytesIO
-from typing import Any, Dict, Tuple, Optional
+from typing import Any, Dict, List, Tuple, Union, Optional
 from pathlib import Path
 from datetime import datetime, timedelta
 from contextvars import ContextVar
@@ -184,6 +184,32 @@ def image_size(raw: bytes) -> Optional[Tuple[int, int]]:
 class MaterialImage:
     url: str
     size: Optional[Tuple[int, int]] = None
+
+
+_FALLBACK_TAG = "_qqbotuid_fallback"
+
+
+def patch_image_fallback() -> None:
+    """接管核心的 _image_to_url，给没有图床的情况补一条 base64 退路。"""
+    current = getattr(core_segment, "_image_to_url", None)
+    if current is None or getattr(current, _FALLBACK_TAG, False):
+        return
+
+    async def _fallback(image: Union[str, bytes], send_type: str, message: Message) -> List[Message]:
+        has_host = core_segment.IS_UPLOAD and core_segment.pclient is not None
+        no_host = (send_type == "link_remote" and not has_host) or (
+            send_type == "link_local" and not core_segment.pic_srv
+        )
+        if not no_host:
+            return await current(image, send_type, message)
+        fallback = [core_segment.MessageSegment.image(image)]
+        size = image_size(image) if isinstance(image, bytes) else None
+        if size is not None:
+            fallback.append(core_segment.MessageSegment.image_size(size))
+        return fallback
+
+    setattr(_fallback, _FALLBACK_TAG, True)
+    core_segment._image_to_url = _fallback
 
 
 async def core_upload_image(raw: bytes) -> Optional[MaterialImage]:
