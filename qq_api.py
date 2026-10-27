@@ -271,7 +271,7 @@ class QQMateriaHost:
             return None
         _, completed = await self._post("/v2/media-images/complete", {"upload_id": upload_id, "md5": md5})
         image_id = str(completed.get("image_id") or "")
-        url = public_image_url(str(completed.get("preview_url") or "")) or str(completed.get("url") or "")
+        url = str(completed.get("url") or "")
         if not url:
             return None
         if image_id:
