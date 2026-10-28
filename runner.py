@@ -110,6 +110,34 @@ def _image_segments(content: List[Message]) -> List[Tuple[str, Optional[Tuple[in
     return segments
 
 
+_PLAIN_LABELS = {"record": "[语音]", "video": "[视频]", "file": "[文件]"}
+
+
+def _size_after(items: List[Message], index: int) -> Optional[Tuple[int, int]]:
+    for item in items[index + 1 :]:
+        if item.type == "image_size":
+            data = item.data
+            if isinstance(data, (tuple, list)) and len(data) == 2:
+                return (int(data[0]), int(data[1]))
+            return None
+        if item.type == "image":
+            return None
+    return None
+
+
+def _join_pieces(pieces: List[Tuple[str, bool]]) -> str:
+    out = ""
+    for text, is_image in pieces:
+        if not text:
+            continue
+        if is_image and out and not out.endswith("\n"):
+            out += "\n"
+        out += text
+        if is_image:
+            out += "\n"
+    return out[:-1] if out.endswith("\n") else out
+
+
 def _iter_md_images(content: str) -> List[Tuple[int, int, int]]:
     spans: List[Tuple[int, int, int]] = []
     cursor = 0
@@ -515,7 +543,7 @@ class QQBotUID:
         if send.bot_id not in {self.config.platform_bot_id, self.config.route_bot_id}:
             logger.debug(t("[QQBotUID] 忽略非官机平台下发消息: bot_id={bot_id}", bot_id=send.bot_id))
             return None
-        control = await handle_control(first.type, first.data)
+        control = await handle_control(first.type, first.data, self.config.platform_bot_id)
         if control is not None:
             return control
         if first.type == "excute_delete_message" and isinstance(first.data, dict):
@@ -656,15 +684,40 @@ class QQBotUID:
 
     async def _build_markdown(self, send: MessageSend, markdown: Optional[Message], text: str) -> Dict[str, Any]:
         body = _markdown_body(markdown, text, send)
-        content = await self._resolve_markdown_images(str(body.get("content") or ""))
-        for image_data, size in _image_segments(send.content or []):
+        if markdown is None:
+            content = await self._segments_markdown(send)
+        else:
+            content = await self._resolve_markdown_images(str(body.get("content") or ""))
+            content = await self._append_segment_images(content, send.content or [])
+        body["content"] = content
+        return body
+
+    async def _segments_markdown(self, send: MessageSend) -> str:
+        """把消息段按原顺序拼成 markdown，图片就地插入。"""
+        items = send.content or []
+        pieces: List[Tuple[str, bool]] = []
+        mentions = [str(item.data) for item in items if item.type == "at" and item.data]
+        if mentions and send.target_type == "group":
+            pieces.append(("".join(f'<qqbot-at-user id="{mention}" />' for mention in mentions), False))
+        for index, item in enumerate(items):
+            if item.type == "text" and item.data is not None:
+                pieces.append((_MD_AT_PATTERN.sub("", str(item.data)), False))
+            elif item.type == "image" and isinstance(item.data, str):
+                material = await self.material_image(item.data, _size_after(items, index))
+                if material is not None:
+                    pieces.append((f"![{_with_size('图片', material.size)}]({material.url})", True))
+            elif item.type in _PLAIN_LABELS:
+                pieces.append((_PLAIN_LABELS[item.type], False))
+        return _join_pieces(pieces)
+
+    async def _append_segment_images(self, content: str, items: List[Message]) -> str:
+        for image_data, size in _image_segments(items):
             material = await self.material_image(image_data, size)
             if material is None:
                 continue
             alt = _with_size("图片", material.size)
             content = f"{content}\n\n![{alt}]({material.url})" if content else f"![{alt}]({material.url})"
-        body["content"] = content
-        return body
+        return content
 
     async def _resolve_markdown_images(self, content: str) -> str:
         if "![" not in content:
