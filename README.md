@@ -107,6 +107,73 @@
 > 机器人昵称、头像、`uin`、`bot_id` 在扫码绑定或首次拉取时从官方接口取一次，之后存在 `data/QQBotUID/bots.json`。
 
 
+## 🗂️ 群成员名单
+
+插件从收到的事件里推「哪个群有哪些人」，只存 openid。不用开开关，也不用手动建表——启动时自己补。
+
+| 表 | 一行是什么 | 什么时候写 |
+| :--- | :--- | :--- |
+| `QQBotUID_User` | 一个群里的一个 openid | 收到消息 / 入群事件加，退群事件删；内存攒 5 秒批量落库 |
+| `QQBotUID_GroupInfo` | 一个群：群名、成员数、更新时间 | 收到群消息时只读缓存，没命中就丢后台查一次，24 小时内不重复请求 |
+
+`QQBotUID_User` 只有 `bot_id`、`group_openid`、`user_openid` 三列（外加自增 `id`）。私聊的 `group_openid` 是空串，频道存 `channel_id`。
+
+| 事件 | 动作 |
+| :--- | :--- |
+| 群消息（`GROUP_AT_MESSAGE_CREATE` 等） | 加这个人——能说话就一定在群里 |
+| `GROUP_MEMBER_ADD` | 加这个人 |
+| `GROUP_MEMBER_REMOVE` | 删这个人 |
+| 私聊消息 | 加到 `group_openid` 为空的那一组 |
+
+同一个人重复出现不会产生重复行；同一批里「退了又进」以最后一次为准。
+
+`QQBotUID_GroupInfo` 的列是 `bot_id`、`group_openid`、`group_name`、`member_num`、`updated_at`。群名和成员数来自 `/v2/groups/{group_openid}/info`，拉取失败留空串并按 24 小时冷却，不会冲掉已经拿到的名字。
+
+
+### 调用方式
+
+控制帧沿插件与核心之间那条 ws 走：核心下发一帧 `MessageSend`，插件查完把结果塞进 `recall_message_id` 回执的 `id` 字段返回，不经过 HTTP、不占端口。
+
+```python
+import json
+from gsuid_core.models import Message
+
+receipts = await bot.send(
+    Message(
+        type="qqbotuid_users_request",
+        data={"request_id": "req-1", "bot_id": "102030405", "group_openid": "1A790910D2..."},
+    ),
+    wait_recall=True,
+)
+payload = json.loads(receipts[0]) if receipts else {}
+```
+
+| 帧 `type` | `data` 参数 | 回执内容 |
+| :--- | :--- | :--- |
+| `qqbotuid_users_request` | `request_id`、`bot_id`、`group_openid` | `group_openid` + `count` + `user_ids` |
+| `qqbotuid_groups_request` | `request_id`、`bot_id`、`keyword`、`limit`（默认 200） | `rows`，按 `updated_at` 倒序 |
+
+`group_openid` 不传是全部群（同一个 openid 可能重复出现），传空串是只看私聊。
+
+回执长这样，`request_id` 原样带回，用来对账：
+
+```json
+{
+  "request_id": "req-1",
+  "ok": true,
+  "group_openid": "1A790910D2...",
+  "count": 2,
+  "user_ids": ["9E5C1F3A4B2D...", "B41D77C0E19A..."]
+}
+```
+
+几个必须注意的点：
+
+- **`wait_recall=True` 不能省。** 不带它核心不会登记等待，`receipts` 永远是 `None`。
+- **`request_id` 必填。** 缺了会回 `{"ok": false, "error": "missing request_id"}`，不会去查库。
+- **等待上限 10 秒**（核心 `RECALL_WAIT_TIMEOUT`），超时 `receipts` 为空列表。查库是本地 SQLite，正常毫秒级。
+- **别把这条连接的回执能力打坏。** 核心对「连续 3 次整轮零回执」的连接会关掉 recall，之后撤回和查询都拿不到回执。插件这边每帧都会回执（查库异常也转成 `ok: false`），但如果你在别处乱发 `wait_recall` 请求，要留意这个计数。
+
 ## 🧩 独立进程模式
 
 默认适配器跑在核心进程里。打开独立进程模式后，核心会在启动时自动拉起一个独立的 daemon 进程来承载适配器，关闭核心时一并关掉——插件崩了不会带走核心。

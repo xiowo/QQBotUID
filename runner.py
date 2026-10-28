@@ -33,6 +33,7 @@ from .qq_api import (
     patch_image_fallback,
     cancel_group_refreshes,
 )
+from .ws_api import handle_control
 from .convert import (
     send_endpoint,
     build_keyboard,
@@ -45,6 +46,7 @@ from .convert import (
 )
 from .webhook import WebhookServer, shared_server
 from .proactive import PassiveWindow, ProactiveDispatcher
+from .user_info import UserRecorder, ensure_table as ensure_user_table
 from .group_info import ensure_table as ensure_group_table
 from .core_bridge import CoreBridge
 
@@ -200,6 +202,7 @@ class QQBotUID:
         self.material = QQMateriaHost(self.tm)
         self.proactive = ProactiveDispatcher()
         self.passive = PassiveWindow()
+        self.users = UserRecorder()
         self._tasks: List[asyncio.Task[Any]] = []
         self._webhook: Optional[WebhookServer] = None
         self._ws = None
@@ -220,6 +223,7 @@ class QQBotUID:
         self._closed = False
         patch_image_fallback()
         await ensure_group_table()
+        await ensure_user_table()
         self.bridge.add_target(self)
         try:
             if self.config.mode == "wh":
@@ -251,6 +255,7 @@ class QQBotUID:
             await self._webhook.remove(self.config.webhook_path)
             self._webhook = None
         await self.proactive.close()
+        await self.users.close()
         cancel_group_refreshes()
         await self.tm.aclose()
 
@@ -396,6 +401,7 @@ class QQBotUID:
                 return
             self._warn_unresolved_reference(payload, receive)
             self.passive.mark(receive.msg_id)
+            self.users.observe(receive)
             await self.bridge.push(receive)
 
     def _skip_other_bot(self, payload: Dict[str, Any]) -> bool:
@@ -454,6 +460,7 @@ class QQBotUID:
             )
             if not self._skip_other_bot(body):
                 self.passive.mark(receive.msg_id)
+                self.users.observe(receive)
                 await self.bridge.push(receive)
         if body.get("t") == "INTERACTION_CREATE":
             return web.json_response({"op": OP_CALLBACK_ACK, "code": 0})
@@ -508,6 +515,9 @@ class QQBotUID:
         if send.bot_id not in {self.config.platform_bot_id, self.config.route_bot_id}:
             logger.debug(t("[QQBotUID] 忽略非官机平台下发消息: bot_id={bot_id}", bot_id=send.bot_id))
             return None
+        control = await handle_control(first.type, first.data)
+        if control is not None:
+            return control
         if first.type == "excute_delete_message" and isinstance(first.data, dict):
             mid = str(first.data.get("message_id") or "")
             endpoint = recall_endpoint(send, mid) if mid else None

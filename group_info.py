@@ -53,7 +53,7 @@ class QQBotUIDGroupInfo(BaseBotIDModel, table=True):
         group_name: str,
         member_num: int = 0,
     ) -> None:
-        row = await cls._select_row(bot_id, group_openid)
+        row = await cls._fetch(session, bot_id, group_openid)
         if row is None:
             session.add(
                 cls(
@@ -75,8 +75,7 @@ class QQBotUIDGroupInfo(BaseBotIDModel, table=True):
         session.add(row)
 
     @classmethod
-    @with_read_session
-    async def _select_row(
+    async def _fetch(
         cls,
         session: AsyncSession,
         bot_id: str,
@@ -84,3 +83,13 @@ class QQBotUIDGroupInfo(BaseBotIDModel, table=True):
     ) -> Optional["QQBotUIDGroupInfo"]:
         stmt = select(cls).where(col(cls.bot_id) == bot_id, col(cls.group_openid) == group_openid)
         return (await session.execute(stmt)).scalars().first()
+
+    @classmethod
+    @with_read_session
+    async def _select_row(
+        cls,
+        session: AsyncSession,
+        bot_id: str,
+        group_openid: str,
+    ) -> Optional["QQBotUIDGroupInfo"]:
+        return await cls._fetch(session, bot_id, group_openid)

@@ -8,6 +8,8 @@ from gsuid_core.server import on_core_start, on_core_shutdown
 
 from .config import ROUTE_BOT_ID, QQBotUIDConfig, get_qqbotuid_configs
 from .runner import QQBotUID
+from .user_info import ensure_table as ensure_user_table
+from .group_info import ensure_table as ensure_group_table
 from .supervisor import DaemonSupervisor
 from .core_bridge import CoreBridge
 
@@ -24,6 +26,8 @@ class _Runtime:
 
     async def start(self) -> None:
         base = QQBotUIDConfig.from_config()
+        await ensure_group_table()
+        await ensure_user_table()
         if base.daemon_mode:
             if not base.enabled:
                 logger.info(t("[QQBotUID] 总开关已关闭，跳过启动"))
