@@ -3,6 +3,7 @@ import html
 from typing import Any, Dict, List, Tuple, Iterable, Optional
 from urllib.parse import unquote
 
+from gsuid_core.logger import logger
 from gsuid_core.models import NODE_MARK, Message, MessageSend, MessageReceive, format_node_preview
 
 _AT_PATTERN = re.compile(r"<@!?[A-Za-z0-9_\-]+>")
@@ -412,20 +413,46 @@ def _sender(
     group_id: Optional[str],
     appid: str,
     group_name: str = "",
+    nickname: str = "",
 ) -> Dict[str, Any]:
     raw_author = d.get("author")
     author = raw_author if isinstance(raw_author, dict) else {}
-    nickname = str(author.get("username") or user_id or "未知用户")
+    name = str(author.get("username") or "").strip() or nickname
     avatar = _build_qqbot_member_avatar(appid, user_id)
     sender = {
-        "nickname": nickname,
-        "user_name": nickname,
+        "nickname": name,
+        "user_name": name,
         "avatar": avatar,
         "user_icon": avatar,
     }
     if group_id:
         sender["group_name"] = group_name or f"群聊-{str(group_id)[:8]}"
     return sender
+
+
+async def fallback_nickname(d: Any, bot_id: str) -> str:
+    if not isinstance(d, dict):
+        return ""
+    raw_author = d.get("author")
+    author = raw_author if isinstance(raw_author, dict) else {}
+    if str(author.get("username") or "").strip():
+        return ""
+    user_id = _event_user_id(d)
+    if not bot_id or not user_id:
+        return ""
+    try:
+        from gsuid_core.utils.database.models import CoreUser
+
+        rows = await CoreUser.select_rows(bot_id=bot_id, user_id=user_id)
+    except Exception as error:
+        logger.debug(f"[QQBotUID] 查核心用户昵称失败: {type(error).__name__}: {error}")
+        return ""
+    for row in sorted(rows or [], key=lambda item: getattr(item, "id", 0) or 0, reverse=True):
+        name = str(getattr(row, "user_name", "") or "").strip()
+        if not name or name == "1" or name == user_id:
+            continue
+        return name
+    return ""
 
 
 def _meta_message(
@@ -458,6 +485,7 @@ def event_to_receive(
     bot_self_id: str,
     appid: str,
     group_name: str = "",
+    nickname: str = "",
 ) -> Optional[MessageReceive]:
     event_type = str(payload.get("t") or "")
     d = payload.get("d") or {}
@@ -483,7 +511,7 @@ def event_to_receive(
             user_type="group",
             group_id=group_id,
             user_id=user_id,
-            sender=_sender(d, user_id, group_id, appid, group_name),
+            sender=_sender(d, user_id, group_id, appid, group_name, nickname),
             content=[Message(type=f"meta-{event_type}", data=d)],
         )
 
@@ -500,7 +528,7 @@ def event_to_receive(
             user_type=user_type,  # type: ignore[arg-type]
             group_id=target_id,
             user_id=user_id,
-            sender=_sender(d, user_id, target_id, appid, group_name),
+            sender=_sender(d, user_id, target_id, appid, group_name, nickname),
             content=[meta],
         )
     reply_id = _extract_reference_id(d)
@@ -566,7 +594,7 @@ def event_to_receive(
         user_type=user_type,  # type: ignore[arg-type]
         group_id=target_id,
         user_id=user_id,
-        sender=_sender(d, user_id, target_id, appid, group_name),
+        sender=_sender(d, user_id, target_id, appid, group_name, nickname),
         content=content,
     )
 

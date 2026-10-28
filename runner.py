@@ -40,6 +40,7 @@ from .convert import (
     is_bot_message,
     recall_endpoint,
     event_to_receive,
+    fallback_nickname,
     normalize_buttons,
     is_reference_message,
     messages_to_plain_text,
@@ -419,6 +420,7 @@ class QQBotUID:
             self.config.self_id,
             self.config.appid,
             await self.group_name(payload),
+            await fallback_nickname(payload.get("d") or {}, self.config.platform_bot_id),
         )
         if receive is not None:
             # debug 下打印原始事件
@@ -481,6 +483,7 @@ class QQBotUID:
             self.config.self_id,
             self.config.appid,
             await self.group_name(body),
+            await fallback_nickname(body.get("d") or {}, self.config.platform_bot_id),
         )
         if receive is not None:
             logger.debug(
