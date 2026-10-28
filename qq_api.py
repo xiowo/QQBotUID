@@ -143,6 +143,49 @@ async def fetch_group_name(tm: "QQTokenManager", group_openid: str) -> str:
     return name
 
 
+_REFRESH_TASKS: Dict[str, "asyncio.Task[str]"] = {}
+
+
+async def cached_group_name(tm: "QQTokenManager", group_openid: str) -> str:
+    """只读缓存：命中直接给名字，没命中给空并丢后台回填。"""
+    group_openid = str(group_openid or "").strip()
+    if not group_openid:
+        return ""
+    row = await QQBotUIDGroupInfo.get_fresh(tm.config.platform_bot_id, group_openid)
+    if row is not None:
+        return row.group_name
+    refresh_group_name(tm, group_openid)
+    return ""
+
+
+def refresh_group_name(tm: "QQTokenManager", group_openid: str) -> "asyncio.Task[str]":
+    """后台回填群名；同群并发只打一次接口。"""
+    key = f"{tm.config.platform_bot_id}:{group_openid}"
+    running = _REFRESH_TASKS.get(key)
+    if running is not None and not running.done():
+        return running
+    task = asyncio.create_task(fetch_group_name(tm, group_openid), name=f"QQBotUID.group_info.{group_openid}")
+    _REFRESH_TASKS[key] = task
+    task.add_done_callback(lambda done: _refresh_done(key, group_openid, done))
+    return task
+
+
+def _refresh_done(key: str, group_openid: str, task: "asyncio.Task[str]") -> None:
+    if _REFRESH_TASKS.get(key) is task:
+        _REFRESH_TASKS.pop(key, None)
+    if task.cancelled():
+        return
+    error = task.exception()
+    if error is not None:
+        logger.warning(f"[QQBotUID] 群信息回填失败（{group_openid}）: {error}")
+
+
+def cancel_group_refreshes() -> None:
+    for task in list(_REFRESH_TASKS.values()):
+        task.cancel()
+    _REFRESH_TASKS.clear()
+
+
 def brief_text(value: Any, limit: int = 200) -> str:
     text = str(value)
     return text if len(text) <= limit else f"{text[:limit]}...(共 {len(text)} 字符)"

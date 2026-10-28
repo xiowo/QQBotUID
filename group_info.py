@@ -8,7 +8,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from gsuid_core.utils.database.base_models import BaseBotIDModel, with_session, with_read_session
 
 CACHE_TTL = 24 * 3600
-RETRY_TTL = 1800
 
 
 async def ensure_table() -> None:
@@ -40,8 +39,7 @@ class QQBotUIDGroupInfo(BaseBotIDModel, table=True):
         row = await cls._select_row(bot_id, group_openid)
         if row is None:
             return None
-        ttl = CACHE_TTL if row.group_name else RETRY_TTL
-        if time.time() - row.updated_at > ttl:
+        if time.time() - row.updated_at > CACHE_TTL:
             return None
         return row
 
@@ -66,6 +64,10 @@ class QQBotUIDGroupInfo(BaseBotIDModel, table=True):
                     updated_at=time.time(),
                 )
             )
+            return
+        if not group_name and row.group_name:
+            row.updated_at = time.time()
+            session.add(row)
             return
         row.group_name = group_name
         row.member_num = member_num

@@ -27,10 +27,11 @@ from .qq_api import (
     brief_text,
     image_size,
     image_bytes,
-    fetch_group_name,
     public_image_url,
+    cached_group_name,
     core_upload_image,
     patch_image_fallback,
+    cancel_group_refreshes,
 )
 from .convert import (
     send_endpoint,
@@ -250,6 +251,7 @@ class QQBotUID:
             await self._webhook.remove(self.config.webhook_path)
             self._webhook = None
         await self.proactive.close()
+        cancel_group_refreshes()
         await self.tm.aclose()
 
     async def deliver(self, send: MessageSend) -> None:
@@ -356,7 +358,7 @@ class QQBotUID:
         group_id = str(d.get("group_openid") or d.get("group_id") or "")
         if not group_id:
             return ""
-        return await fetch_group_name(self.tm, group_id)
+        return await cached_group_name(self.tm, group_id)
 
     async def handle_dispatch(self, payload: Dict[str, Any]) -> None:
         event_type = payload.get("t")
