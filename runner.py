@@ -524,8 +524,7 @@ class QQBotUID:
             return None
         if self.passive.usable(send.msg_id):
             return await self.post_message(send, endpoint, send.msg_id)
-        self.proactive.submit(send.target_type, lambda: self.post_message(send, endpoint, ""))
-        return None
+        return await self.proactive.submit(send.target_type, lambda: self.post_message(send, endpoint, ""))
 
     async def post_message(self, send: MessageSend, endpoint: str, msg_id: str) -> Optional[str]:
         try:

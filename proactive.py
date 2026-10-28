@@ -52,9 +52,12 @@ class ProactiveLane:
         self._worker: Optional["asyncio.Task[None]"] = None
         self._last_sent: Optional[float] = None
 
-    def submit(self, job: ProactiveJob) -> None:
+    async def submit(self, job: ProactiveJob) -> Any:
+        if self.interval <= 0:
+            return await job()
         self._queue.put_nowait(job)
         self._ensure_worker()
+        return None
 
     def _ensure_worker(self) -> None:
         if self._worker is not None and not self._worker.done():
@@ -102,8 +105,8 @@ class ProactiveDispatcher:
     def lane_for(self, target_type: Optional[str]) -> ProactiveLane:
         return self.direct if target_type == "direct" else self.group
 
-    def submit(self, target_type: Optional[str], job: ProactiveJob) -> None:
-        self.lane_for(target_type).submit(job)
+    async def submit(self, target_type: Optional[str], job: ProactiveJob) -> Any:
+        return await self.lane_for(target_type).submit(job)
 
     async def close(self) -> None:
         await asyncio.gather(self.direct.close(), self.group.close())

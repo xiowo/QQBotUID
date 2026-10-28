@@ -116,13 +116,13 @@ ADVANCED_CONFIG_DEFAULT: dict[str, GSC] = {
     "_DividerProactive": GsDivider("主动消息队列", ""),
     "proactive_direct_interval": GsIntConfig(
         title="私聊主动间隔 (ms)",
-        desc="私聊车道上两条主动消息之间的最小间隔；订阅推送等被动窗口外的消息都走这条车道。",
+        desc="私聊车道两条主动消息之间的最小间隔；被动窗口外的发送都走这条车道。填 0 表示不进队列，直接发。",
         data=110,
         max_value=60000,
     ),
     "proactive_group_interval": GsIntConfig(
         title="群聊主动间隔 (ms)",
-        desc="群聊车道上两条主动消息之间的最小间隔；频道消息也走这条车道。",
+        desc="群聊车道两条主动消息之间的最小间隔；频道消息也走这条车道。填 0 表示不进队列，直接发。",
         data=1010,
         max_value=60000,
     ),
