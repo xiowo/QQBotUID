@@ -40,6 +40,14 @@ CONFIG_DEFAULT: dict[str, GSC] = {
         data=0,
         max_value=60000,
     ),
+    "group_name_enabled": GsBoolConfig(
+        title="获取群名称",
+        desc=(
+            "开启后调 /v2/groups/{group_openid}/info 查群名，结果缓存 24 小时；"
+            "关闭则群名统一用「群聊-xxxxxxxx」兜底，不请求接口。"
+        ),
+        data=True,
+    ),
     "_DividerDaemon": GsDivider("独立进程模式", ""),
     "daemon_mode": GsBoolConfig(
         title="启用独立进程",
@@ -137,6 +145,10 @@ def _cfg_int(config: StringConfig, name: str, default: int) -> int:
         return int(config.get_config(name).data)
     except (TypeError, ValueError):
         return default
+
+
+def group_name_enabled() -> bool:
+    return bool(qqbotuid_config.get_config("group_name_enabled").data)
 
 
 def _normalize_mode(mode: Any) -> Literal["ws", "wh"]:

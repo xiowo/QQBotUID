@@ -74,11 +74,11 @@ def _attachment_to_message(attachment: Dict[str, Any]) -> Optional[Message]:
     content_type = str(attachment.get("content_type") or "").lower()
     file_name = str(attachment.get("filename") or "file")
     if "image" in content_type:
-        return Message(type="image", data=f"link://{url}")
+        return Message(type="image", data=url)
     if "audio" in content_type or "voice" in content_type:
-        return Message(type="record", data=f"link://{url}")
+        return Message(type="record", data=url)
     if "video" in content_type:
-        return Message(type="video", data=f"link://{url}")
+        return Message(type="video", data=url)
     return Message(type="file", data=f"{file_name}|{url}")
 
 
@@ -137,7 +137,7 @@ def _extract_block_image_url(block: str) -> str:
 
 def _image_message(image_url: str) -> Message:
     image_url = html.unescape(str(image_url or "").strip())
-    return Message(type="image", data=f"link://{image_url}" if image_url.startswith("http") else image_url)
+    return Message(type="image", data=image_url)
 
 
 def _extract_associated_node_items(value: Any) -> List[Message]:
@@ -399,23 +399,24 @@ def _event_user_id(d: Dict[str, Any]) -> str:
 
 
 def _build_qqbot_member_avatar(appid: str, member_openid: str) -> str:
-    appid = str(appid or "").strip()
+    """官机用户头像，appid 用配置里存的那个。"""
     member_openid = str(member_openid or "").strip()
     if appid and member_openid:
         return f"https://q.qlogo.cn/qqapp/{appid}/{member_openid}/0"
     return "qqbot://user-avatar/unknown"
 
 
-def _build_group_placeholder_icon(group_id: str) -> str:
-    group_id = str(group_id or "").strip()
-    return f"qqbot://group-avatar/{group_id or 'unknown'}"
-
-
-def _sender(d: Dict[str, Any], user_id: str, group_id: Optional[str]) -> Dict[str, Any]:
+def _sender(
+    d: Dict[str, Any],
+    user_id: str,
+    group_id: Optional[str],
+    appid: str,
+    group_name: str = "",
+) -> Dict[str, Any]:
     raw_author = d.get("author")
     author = raw_author if isinstance(raw_author, dict) else {}
     nickname = str(author.get("username") or user_id or "未知用户")
-    avatar = _build_qqbot_member_avatar(str(d.get("appid") or ""), user_id)
+    avatar = _build_qqbot_member_avatar(appid, user_id)
     sender = {
         "nickname": nickname,
         "user_name": nickname,
@@ -423,12 +424,7 @@ def _sender(d: Dict[str, Any], user_id: str, group_id: Optional[str]) -> Dict[st
         "user_icon": avatar,
     }
     if group_id:
-        sender.update(
-            {
-                "group_name": f"群聊-{str(group_id)[:8]}",
-                "group_icon": _build_group_placeholder_icon(group_id),
-            }
-        )
+        sender["group_name"] = group_name or f"群聊-{str(group_id)[:8]}"
     return sender
 
 
@@ -456,13 +452,18 @@ def _meta_message(
     return None
 
 
-def event_to_receive(payload: Dict[str, Any], bot_id: str, bot_self_id: str) -> Optional[MessageReceive]:
+def event_to_receive(
+    payload: Dict[str, Any],
+    bot_id: str,
+    bot_self_id: str,
+    appid: str,
+    group_name: str = "",
+) -> Optional[MessageReceive]:
     event_type = str(payload.get("t") or "")
     d = payload.get("d") or {}
     if not isinstance(d, dict):
         return None
 
-    appid = str(payload.get("appid") or d.get("appid") or "")
     if event_type in GROUP_EVENTS or event_type in LIFECYCLE_EVENTS:
         user_type = "group"
         target_id = str(d.get("group_openid") or d.get("group_id") or "")
@@ -482,7 +483,7 @@ def event_to_receive(payload: Dict[str, Any], bot_id: str, bot_self_id: str) -> 
             user_type="group",
             group_id=group_id,
             user_id=user_id,
-            sender=_sender({**d, "appid": appid}, user_id, group_id),
+            sender=_sender(d, user_id, group_id, appid, group_name),
             content=[Message(type=f"meta-{event_type}", data=d)],
         )
 
@@ -499,7 +500,7 @@ def event_to_receive(payload: Dict[str, Any], bot_id: str, bot_self_id: str) -> 
             user_type=user_type,  # type: ignore[arg-type]
             group_id=target_id,
             user_id=user_id,
-            sender=_sender({**d, "appid": appid}, user_id, target_id),
+            sender=_sender(d, user_id, target_id, appid, group_name),
             content=[meta],
         )
     reply_id = _extract_reference_id(d)
@@ -526,7 +527,7 @@ def event_to_receive(payload: Dict[str, Any], bot_id: str, bot_self_id: str) -> 
             converted = _attachment_to_message(attachment)
             if converted:
                 if converted.type == "image":
-                    _append_unique_image(content, seen_images, str(converted.data or "").replace("link://", ""))
+                    _append_unique_image(content, seen_images, str(converted.data or ""))
                 else:
                     content.append(converted)
 
@@ -565,7 +566,7 @@ def event_to_receive(payload: Dict[str, Any], bot_id: str, bot_self_id: str) -> 
         user_type=user_type,  # type: ignore[arg-type]
         group_id=target_id,
         user_id=user_id,
-        sender=_sender({**d, "appid": appid}, user_id, target_id),
+        sender=_sender(d, user_id, target_id, appid, group_name),
         content=content,
     )
 

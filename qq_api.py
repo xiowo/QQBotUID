@@ -20,6 +20,7 @@ from gsuid_core.models import Message
 from gsuid_core.utils.plugins_config.gs_config import pic_upload_config
 
 from .config import QQBotUIDConfig
+from .group_info import QQBotUIDGroupInfo
 
 _MATERIALS: ContextVar[Tuple[str, ...]] = ContextVar("qqbotuid_materials", default=())
 
@@ -108,6 +109,40 @@ async def fetch_bot_profile(config: QQBotUIDConfig) -> Optional[BotProfile]:
     return profile
 
 
+async def fetch_group_name(tm: "QQTokenManager", group_openid: str) -> str:
+    """查群名，缓存 24 小时。"""
+    group_openid = str(group_openid or "").strip()
+    if not group_openid:
+        return ""
+    bot_id = tm.config.platform_bot_id
+    cached = await QQBotUIDGroupInfo.get_fresh(bot_id, group_openid)
+    if cached is not None:
+        return cached.group_name
+
+    status = 0
+    data: Any = {}
+    try:
+        client = await tm.client()
+        resp = await client.get(
+            f"/v2/groups/{group_openid}/info",
+            headers={"Authorization": await tm.authorization()},
+        )
+        status = resp.status_code
+        if status == 200:
+            data = resp.json()
+    except (httpx.HTTPError, ValueError, RuntimeError) as e:
+        logger.warning(f"[QQBotUID] 获取群信息失败（{group_openid}）: {e}")
+        await QQBotUIDGroupInfo.upsert(bot_id, group_openid, "")
+        return ""
+
+    name = str(data.get("group_name") or "").strip() if isinstance(data, dict) else ""
+    members = data.get("group_member_num") if isinstance(data, dict) else 0
+    if not name:
+        logger.warning(f"[QQBotUID] 群信息接口没给出群名（{group_openid}），HTTP {status}")
+    await QQBotUIDGroupInfo.upsert(bot_id, group_openid, name, members if isinstance(members, int) else 0)
+    return name
+
+
 def brief_text(value: Any, limit: int = 200) -> str:
     text = str(value)
     return text if len(text) <= limit else f"{text[:limit]}...(共 {len(text)} 字符)"
@@ -187,10 +222,27 @@ class MaterialImage:
 
 
 _FALLBACK_TAG = "_qqbotuid_fallback"
+_PLAIN_URL_TAG = "_qqbotuid_plain_url"
+
+
+def patch_plain_url_image() -> None:
+    current = getattr(core_segment, "_convert_message_to_image", None)
+    if current is None or getattr(current, _PLAIN_URL_TAG, False):
+        return
+
+    async def _convert(message: Message, bot_id: str, bot_self_id: str) -> List[Message]:
+        data = message.data
+        if isinstance(data, str) and data.startswith(("http://", "https://")):
+            message = Message(type="image", data=f"link://{data}")
+        return await current(message, bot_id, bot_self_id)
+
+    setattr(_convert, _PLAIN_URL_TAG, True)
+    core_segment._convert_message_to_image = _convert
 
 
 def patch_image_fallback() -> None:
     """接管核心的 _image_to_url，给没有图床的情况补一条 base64 退路。"""
+    patch_plain_url_image()
     current = getattr(core_segment, "_image_to_url", None)
     if current is None or getattr(current, _FALLBACK_TAG, False):
         return

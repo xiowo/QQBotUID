@@ -18,7 +18,7 @@ from gsuid_core.models import Message, MessageSend, MessageReceive, normalize_no
 from gsuid_core.utils.plugins_config.gs_config import bm_config
 
 from .sign import verify_and_respond
-from .config import QQBotUIDConfig, update_bot_name
+from .config import QQBotUIDConfig, update_bot_name, group_name_enabled
 from .qq_api import (
     QQSender,
     MaterialImage,
@@ -27,6 +27,7 @@ from .qq_api import (
     brief_text,
     image_size,
     image_bytes,
+    fetch_group_name,
     public_image_url,
     core_upload_image,
     patch_image_fallback,
@@ -43,6 +44,7 @@ from .convert import (
 )
 from .webhook import WebhookServer, shared_server
 from .proactive import PassiveWindow, ProactiveDispatcher
+from .group_info import ensure_table as ensure_group_table
 from .core_bridge import CoreBridge
 
 OP_DISPATCH = 0
@@ -214,6 +216,7 @@ class QQBotUID:
         self.config.validate()
         self._closed = False
         patch_image_fallback()
+        await ensure_group_table()
         self.bridge.add_target(self)
         try:
             if self.config.mode == "wh":
@@ -341,6 +344,16 @@ class QQBotUID:
             with contextlib.suppress(Exception):
                 await self.send_op(OP_HEARTBEAT, self._seq)
 
+    async def group_name(self, payload: Dict[str, Any]) -> str:
+        if not group_name_enabled():
+            return ""
+        raw = payload.get("d")
+        d = raw if isinstance(raw, dict) else {}
+        group_id = str(d.get("group_openid") or d.get("group_id") or "")
+        if not group_id:
+            return ""
+        return await fetch_group_name(self.tm, group_id)
+
     async def handle_dispatch(self, payload: Dict[str, Any]) -> None:
         event_type = payload.get("t")
         if event_type == "READY":
@@ -361,7 +374,13 @@ class QQBotUID:
         if event_type == "RESUMED":
             logger.success(t("[QQBotUID] QQ官方WS会话已恢复"))
             return
-        receive = event_to_receive(payload, self.config.platform_bot_id, self.config.self_id)
+        receive = event_to_receive(
+            payload,
+            self.config.platform_bot_id,
+            self.config.self_id,
+            self.config.appid,
+            await self.group_name(payload),
+        )
         if receive is not None:
             # debug 下打印原始事件
             logger.debug(
@@ -416,7 +435,13 @@ class QQBotUID:
             if resp is None:
                 return web.json_response({"error": "invalid validation"}, status=400)
             return web.json_response(resp)
-        receive = event_to_receive(body, self.config.platform_bot_id, self.config.self_id)
+        receive = event_to_receive(
+            body,
+            self.config.platform_bot_id,
+            self.config.self_id,
+            self.config.appid,
+            await self.group_name(body),
+        )
         if receive is not None:
             logger.debug(
                 t("[QQBotUID] Webhook 事件 {event_type}: {raw}", event_type=body.get("t"), raw=brief_text(body, 1500))
@@ -442,6 +467,7 @@ class QQBotUID:
             },
             self.config.platform_bot_id,
             self.config.self_id,
+            self.config.appid,
         )
         if ack is None:
             return
