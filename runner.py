@@ -185,6 +185,11 @@ def _user_agent(client_name: str) -> str:
     return f"{UA_PLUGIN_TAG} ({runtime}; {name}/{CLIENT_VERSION})"
 
 
+class _Deferred:
+    def __bool__(self) -> bool:
+        return False
+
+
 class QQBotUID:
     def __init__(self, config: QQBotUIDConfig, bridge: CoreBridge):
         self.config = config
@@ -192,10 +197,7 @@ class QQBotUID:
         self.tm = QQTokenManager(config)
         self.sender = QQSender(self.tm)
         self.material = QQMateriaHost(self.tm)
-        self.proactive = ProactiveDispatcher(
-            config.proactive_direct_interval,
-            config.proactive_group_interval,
-        )
+        self.proactive = ProactiveDispatcher()
         self.passive = PassiveWindow()
         self._tasks: List[asyncio.Task[Any]] = []
         self._webhook: Optional[WebhookServer] = None
@@ -255,6 +257,8 @@ class QQBotUID:
         if send.bot_self_id and send.bot_self_id != self.self_id:
             return
         message_id = await self.handle_core_send(send)
+        if isinstance(message_id, _Deferred):
+            return
         await self.send_recall_ack(send, message_id)
 
     async def qq_ws_forever(self) -> None:
@@ -495,7 +499,7 @@ class QQBotUID:
             else:
                 logger.info(t("[QQBotUID] 已解除禁言 {user_id}", user_id=user_id))
 
-    async def handle_core_send(self, send: MessageSend) -> Optional[Union[str, List[str]]]:
+    async def handle_core_send(self, send: MessageSend) -> Optional[Union[str, List[str], _Deferred]]:
         if not send.content:
             return None
         first = send.content[0]
@@ -511,7 +515,11 @@ class QQBotUID:
             return None
         node = next((item for item in send.content if item.type == "node" and isinstance(item.data, list)), None)
         if node is not None:
-            return await self.send_node_items(send, node.data)
+            items = node.data
+            if not self.passive.usable(send.msg_id):
+                self.proactive.submit(send.target_type, lambda: self.send_proactive_node(send, items))
+                return _Deferred()
+            return await self.send_node_items(send, items)
         endpoint = send_endpoint(send)
         if endpoint is None:
             logger.warning(
@@ -522,9 +530,25 @@ class QQBotUID:
                 )
             )
             return None
-        if self.passive.usable(send.msg_id):
-            return await self.post_message(send, endpoint, send.msg_id)
-        return await self.proactive.submit(send.target_type, lambda: self.post_message(send, endpoint, ""))
+        if not self.passive.usable(send.msg_id):
+            self.proactive.submit(send.target_type, lambda: self.send_proactive(send, endpoint))
+            return _Deferred()
+        return await self.post_message(send, endpoint, send.msg_id)
+
+    async def send_proactive(self, send: MessageSend, endpoint: str) -> None:
+        """主动消息"""
+        message_id: Optional[str] = None
+        try:
+            message_id = await self.post_message(send, endpoint, "")
+        finally:
+            await self.send_recall_ack(send, message_id)
+
+    async def send_proactive_node(self, send: MessageSend, items: Any) -> None:
+        message_ids: Optional[List[str]] = None
+        try:
+            message_ids = await self.send_node_items(send, items)
+        finally:
+            await self.send_recall_ack(send, message_ids)
 
     async def post_message(self, send: MessageSend, endpoint: str, msg_id: str) -> Optional[str]:
         try:
@@ -551,6 +575,17 @@ class QQBotUID:
 
     async def send_node_items(self, send: MessageSend, items: Any) -> Optional[List[str]]:
         """node 降级多条消息发送"""
+        endpoint = send_endpoint(send)
+        if endpoint is None:
+            logger.warning(
+                t(
+                    "[QQBotUID] 无法推断发送目标: {target_type}/{target_id}",
+                    target_type=send.target_type,
+                    target_id=send.target_id,
+                )
+            )
+            return None
+        msg_id = send.msg_id if self.passive.usable(send.msg_id) else ""
         message_ids: List[str] = []
         for item in normalize_node_items(items):
             part = MessageSend(
@@ -561,10 +596,8 @@ class QQBotUID:
                 target_id=send.target_id,
                 content=[item],
             )
-            message_id = await self.handle_core_send(part)
-            if isinstance(message_id, list):
-                message_ids.extend(message_id)
-            elif message_id:
+            message_id = await self.post_message(part, endpoint, msg_id)
+            if message_id:
                 message_ids.append(message_id)
         return message_ids or None
 

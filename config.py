@@ -116,13 +116,13 @@ ADVANCED_CONFIG_DEFAULT: dict[str, GSC] = {
     "_DividerProactive": GsDivider("主动消息队列", ""),
     "proactive_direct_interval": GsIntConfig(
         title="私聊主动间隔 (ms)",
-        desc="私聊车道两条主动消息之间的最小间隔；被动窗口外的发送都走这条车道。填 0 表示不进队列，直接发。",
+        desc="私聊车道两条主动消息之间的放行间隔；被动窗口外的发送都走这条车道。填 0 表示不限速，立刻放行。",
         data=110,
         max_value=60000,
     ),
     "proactive_group_interval": GsIntConfig(
         title="群聊主动间隔 (ms)",
-        desc="群聊车道两条主动消息之间的最小间隔；频道消息也走这条车道。填 0 表示不进队列，直接发。",
+        desc="群聊车道两条主动消息之间的放行间隔；频道消息也走这条车道。填 0 表示不限速，立刻放行。",
         data=1010,
         max_value=60000,
     ),
@@ -149,6 +149,14 @@ def _cfg_int(config: StringConfig, name: str, default: int) -> int:
 
 def group_name_enabled() -> bool:
     return bool(qqbotuid_config.get_config("group_name_enabled").data)
+
+
+PROACTIVE_DEFAULT_MS = {"direct": 110, "group": 1010}
+
+
+def proactive_interval_ms(scene: str) -> int:
+    key = f"proactive_{scene}_interval"
+    return max(_cfg_int(advanced_config, key, PROACTIVE_DEFAULT_MS.get(scene, 0)), 0)
 
 
 def _normalize_mode(mode: Any) -> Literal["ws", "wh"]:
@@ -202,8 +210,6 @@ def get_qqbotuid_configs() -> list["QQBotUIDConfig"]:
                 reconnect_interval=base.reconnect_interval,
                 client_name=base.client_name,
                 ignore_bot_message=base.ignore_bot_message,
-                proactive_direct_interval=base.proactive_direct_interval,
-                proactive_group_interval=base.proactive_group_interval,
             )
         )
     return configs
@@ -228,8 +234,6 @@ class QQBotUIDConfig:
     reconnect_interval: int = 0
     client_name: str = "QQBotUID"
     ignore_bot_message: bool = True
-    proactive_direct_interval: int = 110
-    proactive_group_interval: int = 1010
     daemon_mode: bool = False
     core_host: str = "127.0.0.1"
     core_port: int = 8765
@@ -259,8 +263,6 @@ class QQBotUIDConfig:
             reconnect_interval=_cfg_int(qqbotuid_config, "reconnect_interval", 0),
             client_name=_cfg_str(advanced_config, "client_name", "QQBotUID"),
             ignore_bot_message=bool(qqbotuid_config.get_config("ignore_bot_message").data),
-            proactive_direct_interval=_cfg_int(advanced_config, "proactive_direct_interval", 110),
-            proactive_group_interval=_cfg_int(advanced_config, "proactive_group_interval", 1010),
             daemon_mode=bool(qqbotuid_config.get_config("daemon_mode").data),
             core_host=_cfg_str(qqbotuid_config, "core_host", "127.0.0.1"),
             core_port=_cfg_int(qqbotuid_config, "core_port", 8765),
