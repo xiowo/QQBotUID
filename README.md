@@ -168,6 +168,7 @@ payload = json.loads(receipts[0]) if receipts else {}
 | 帧 `type` | `data` 参数 | 回执内容 |
 | :--- | :--- | :--- |
 | `gscore_group_members_request` | `request_id`、`group_id`（或 `group_openid`）、`bot_id` | `group_openid` + `count` + `member_ids` |
+| `gscore_qqbot_active_test` | `target_type`（`group` / `direct`）、`target_id`、`bot_self_id` | `ok` + `message_id` + `error` |
 
 
 
@@ -189,6 +190,20 @@ payload = json.loads(receipts[0]) if receipts else {}
 - **`request_id` 必填。** 缺了会回 `{"ok": false, "error": "missing request_id"}`，不会去查库。
 - **等待上限 10 秒**（核心 `RECALL_WAIT_TIMEOUT`），超时 `receipts` 为空列表。查库是本地 SQLite，正常毫秒级。
 - **别把这条连接的回执能力打坏。** 核心对「连续 3 次整轮零回执」的连接会关掉 recall，之后撤回和查询都拿不到回执。插件这边每帧都会回执（查库异常也转成 `ok: false`），但如果你在别处乱发 `wait_recall` 请求，要留意这个计数。
+
+### 主动消息权限测试
+
+`gscore_qqbot_active_test` 用来确认「机器人能不能在这个群里主动发言」。插件会**真的**往目标发一条「✅主动权限确认成功」，所以调用方每次都会在群里看到一条消息。
+
+```json
+{"ok": true, "message_id": "xxxx", "error": ""}
+```
+
+失败时 `ok` 为 `false`，`error` 是平台原话（带 `code`，比如没有主动消息权限时是 `code=40034106`）。
+
+- **它绕开被动回复。** 发送时 `msg_id` 传空串，走的就是纯主动通道；如果拿入站消息的 `msg_id` 去发，平台会当成被动回复，测出来永远是成功。
+- **它不进主动消息队列。** 和普通主动推送不同，这条是同步直发、立即返回结果，不受 `主动消息间隔` 限制。
+- **回执同样走 `wait_recall=True`**，没有 `receipts` 就当失败处理。
 
 ## 🧩 独立进程模式
 

@@ -41,7 +41,7 @@ from .qq_api import (
     patch_image_fallback,
     cancel_group_refreshes,
 )
-from .ws_api import handle_control
+from .ws_api import ACTIVE_TEST, handle_control
 from .convert import (
     send_endpoint,
     build_keyboard,
@@ -91,6 +91,24 @@ FAST_RETRY_FLOOR_MS = 1000
 _BROKEN_IMAGE_DATA_PATTERN = re.compile(r"Message\(type='image', data='(?P<data>[^']*)'")
 # markdown 图片尺寸
 _MD_SIZE_PATTERN = re.compile(r"#(?P<w>\d+)px\s*#(?P<h>\d+)px")
+
+# 主动消息权限测试
+ACTIVE_TEST_TEXT = "✅主动权限确认成功"
+
+
+def _qq_error_text(data: Any) -> str:
+    """把 QQ 开放平台的错误体。"""
+    if not isinstance(data, dict):
+        return brief_text(data, 200) or "平台拒绝发送"
+    message = str(data.get("message") or data.get("msg") or "").strip()
+    code = data.get("code") or data.get("err_code") or ""
+    if message and code:
+        return f"{message}(code={code})"
+    if message:
+        return message
+    if code:
+        return f"code={code}"
+    return brief_text(data, 200) or "平台拒绝发送"
 
 
 def _alt_size(alt: str) -> Optional[Tuple[int, int]]:
@@ -615,6 +633,8 @@ class QQBotUID:
         control = await handle_control(first.type, first.data, self.config.platform_bot_id)
         if control is not None:
             return control
+        if first.type == ACTIVE_TEST:
+            return await self.active_test_reply(send, first.data)
         if first.type == "excute_delete_message" and isinstance(first.data, dict):
             mid = str(first.data.get("message_id") or "")
             endpoint = recall_endpoint(send, mid) if mid else None
@@ -644,6 +664,33 @@ class QQBotUID:
             return _Deferred()
         return await self.post_message(send, endpoint, send.msg_id)
 
+    async def active_test_reply(self, send: MessageSend, data: Any) -> str:
+        """核心通用协议 gscore_qqbot_active_test"""
+        payload = data if isinstance(data, dict) else {}
+        target_type = "direct" if str(payload.get("target_type") or "") == "direct" else "group"
+        target_id = str(payload.get("target_id") or "")
+        probe = MessageSend(
+            bot_id=send.bot_id,
+            bot_self_id=send.bot_self_id,
+            target_type=target_type,
+            target_id=target_id,
+            content=[Message(type="text", data=ACTIVE_TEST_TEXT)],
+        )
+        endpoint = send_endpoint(probe)
+        if endpoint is None:
+            return json.dumps({"ok": False, "message_id": None, "error": "缺少有效的发送目标"}, ensure_ascii=False)
+        message_id, error = await self.post_message_detail(probe, endpoint, "")
+        logger.debug(
+            f"[QQBotUID] 主动消息权限测试: target={target_type}/{target_id} "
+            f"ok={bool(message_id)} error={error!r}"
+        )
+        if message_id:
+            return json.dumps({"ok": True, "message_id": message_id, "error": ""}, ensure_ascii=False)
+        return json.dumps(
+            {"ok": False, "message_id": None, "error": error or "主动发送失败，可能是权限不足或频次限制"},
+            ensure_ascii=False,
+        )
+
     async def send_proactive(self, send: MessageSend, endpoint: str) -> None:
         """主动消息"""
         message_id: Optional[str] = None
@@ -660,13 +707,18 @@ class QQBotUID:
             await self.send_recall_ack(send, message_ids)
 
     async def post_message(self, send: MessageSend, endpoint: str, msg_id: str) -> Optional[str]:
+        message_id, _ = await self.post_message_detail(send, endpoint, msg_id)
+        return message_id
+
+    async def post_message_detail(self, send: MessageSend, endpoint: str, msg_id: str) -> Tuple[Optional[str], str]:
+        """发送一帧，返回 (message_id, error)；error 为空串表示成功。"""
         try:
             payload = await self.build_send_payload(send, msg_id)
             markdown_body = payload.get("markdown")
             has_markdown = isinstance(markdown_body, dict) and bool(str(markdown_body.get("content") or "").strip())
             if not payload.get("content") and not has_markdown and not payload.get("media"):
                 logger.warning(t("[QQBotUID] 没有可发送的内容，已跳过: {target_id}", target_id=send.target_id))
-                return None
+                return None, "没有可发送的内容"
             ok, data = await self.sender.post_json(endpoint, payload)
             if not ok:
                 logger.warning(
@@ -677,8 +729,8 @@ class QQBotUID:
                         payload=brief_text(payload, 400),
                     )
                 )
-                return None
-            return str(data.get("id") or data.get("msg_id") or data.get("message_id") or "") or None
+                return None, _qq_error_text(data)
+            return str(data.get("id") or data.get("msg_id") or data.get("message_id") or "") or None, ""
         finally:
             self.material.schedule_cleanup()
 

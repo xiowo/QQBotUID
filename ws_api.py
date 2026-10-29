@@ -6,6 +6,7 @@ from gsuid_core.logger import logger
 from .user_info import QQBotUIDUser
 
 MEMBERS_REQUEST = "gscore_group_members_request"
+ACTIVE_TEST = "gscore_qqbot_active_test"
 CONTROL_TYPES: Tuple[str, ...] = (MEMBERS_REQUEST,)
 
 
