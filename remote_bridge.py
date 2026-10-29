@@ -8,7 +8,7 @@ from websockets.exceptions import ConnectionClosed
 from gsuid_core.logger import logger
 from gsuid_core.models import MessageSend, MessageReceive
 
-from .core_bridge import CoreTarget, log_core_frame
+from .core_bridge import CoreTarget
 
 RECONNECT_MIN = 1.0
 RECONNECT_MAX = 30.0
@@ -23,10 +23,6 @@ class RemoteBridge:
         self._targets: Dict[str, CoreTarget] = {}
         self._closed = False
         self._disconnects = 0
-
-    @property
-    def connected(self) -> bool:
-        return self._ws is not None
 
     def maintenance_active(self, threshold: int = 1) -> bool:
         if self._closed or self._ws is not None:
@@ -100,10 +96,6 @@ class RemoteBridge:
             send = msgjson.decode(body, type=MessageSend)
         except (DecodeError, ValidationError) as e:
             logger.warning(f"[QQBotUID] 核心下发的帧无法解析，已跳过: {e}")
-            return
-        content = send.content or []
-        if content and content[0].type is not None and content[0].type.startswith("log_"):
-            log_core_frame(content[0].type, content[0].data)
             return
         if send.bot_self_id:
             target = self._targets.get(send.bot_self_id)

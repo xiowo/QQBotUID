@@ -1,15 +1,22 @@
 import os
 import sys
+import io
 import time
 import types
 import signal
 import asyncio
 import hashlib
+import logging
+import tempfile
+import threading
+import traceback
 import importlib
 import contextlib
-from typing import Any, Optional
+from collections import deque
+from typing import Any, Callable, Deque, Dict, List, Optional
 from pathlib import Path
 from urllib.parse import quote
+from multiprocessing.connection import Listener
 
 _PLUGIN_DIR = Path(__file__).resolve().parent
 _PLUGINS_ROOT = _PLUGIN_DIR.parent
@@ -51,6 +58,255 @@ LOCK_TTL = 30.0
 _STARTED_AT = 0.0
 
 EXIT_LOCKED = 3
+
+# 独立进程的日志要能被核心看到：daemon 自己开一条本地命名管道，核心连上来取。
+# 不走文件是因为文件要落盘、核心还得轮询，两样都是白白多出来的阻塞。
+LOG_QUEUE_MAX = 500
+LOG_BATCH_MAX = 64
+LOG_RETRY = 1.0
+RELAY_LEVEL = 5  # TRACE，全量转发
+
+
+def log_pipe_address() -> str:
+    """管道名按核心安装目录算，核心重启、daemon 不重启也能接上同一条。"""
+    digest = hashlib.blake2b(str(_CORE_ROOT).encode("utf-8"), digest_size=6).hexdigest()
+    if os.name == "nt":
+        return rf"\\.\pipe\QQBotUID-{digest}"
+    return str(Path(tempfile.gettempdir()) / f"QQBotUID-{digest}.sock")
+
+
+def log_pipe_authkey() -> bytes:
+    """两边各算一份，免得别的本地进程往管道里塞日志。"""
+    return hashlib.blake2b(str(_CORE_ROOT).encode("utf-8"), digest_size=16).digest()
+
+
+class LogPipe:
+    """daemon 侧的日志出口：自己开一条本地命名管道，核心连上来取。
+
+    ``put()`` 只往内存队列塞一条，绝不阻塞调用方（logging handler 和 stderr 都在调它）；
+    真正走管道的发送在后台线程里做，核心没连上时队列自己攒着，攒满丢最旧的。
+    管道由 daemon 开、核心连，是因为核心那边随时可能重启，让核心当客户端才好收摊。
+    """
+
+    def __init__(self, address: str, capacity: int = LOG_QUEUE_MAX) -> None:
+        self._address = address
+        self._authkey = log_pipe_authkey()
+        self._capacity = capacity
+        self._queue: Deque[Dict[str, str]] = deque()
+        self._cond = threading.Condition()
+        self._stop = threading.Event()
+        self._thread: Optional[threading.Thread] = None
+        self._dropped = 0
+        self._pending: Optional[Callable[[], None]] = None
+
+    def set_pending_flush(self, hook: Callable[[], None]) -> None:
+        """队列空下来时顺手调一下，用来把 stderr 攒着的半截刷出去。"""
+        self._pending = hook
+
+    def start(self) -> None:
+        if self._thread is None:
+            self._thread = threading.Thread(target=self._run, name="QQBotUID.log-pipe", daemon=True)
+            self._thread.start()
+
+    def put(self, level: str, event: str) -> None:
+        with self._cond:
+            if len(self._queue) >= self._capacity:
+                self._queue.popleft()
+                self._dropped += 1
+            self._queue.append({"level": level, "event": event})
+            self._cond.notify()
+
+    def close(self) -> None:
+        self._stop.set()
+        with self._cond:
+            self._cond.notify_all()
+        thread = self._thread
+        if thread is not None:
+            thread.join(1.5)
+
+    def _run(self) -> None:
+        while not self._stop.is_set():
+            listener = self._listen()
+            if listener is None:
+                self._stop.wait(LOG_RETRY)
+                continue
+            try:
+                self._accept(listener)
+            finally:
+                with contextlib.suppress(Exception):
+                    listener.close()
+
+    def _listen(self) -> Optional[Any]:
+        try:
+            return Listener(self._address, authkey=self._authkey)
+        except OSError:
+            # 上一个进程的管道还没释放干净，等一会儿再试
+            return None
+
+    def _accept(self, listener: Any) -> None:
+        while not self._stop.is_set():
+            try:
+                conn = listener.accept()
+            except (OSError, EOFError):
+                return
+            try:
+                self._serve(conn)
+            finally:
+                with contextlib.suppress(Exception):
+                    conn.close()
+
+    def _serve(self, conn: Any) -> None:
+        self._flush_dropped(conn)
+        while not self._stop.is_set():
+            batch = self._take()
+            if not batch:
+                if self._peer_gone(conn):
+                    return
+                continue
+            try:
+                conn.send(batch)
+            except Exception:
+                # 核心断了，这批塞回去下次一起发
+                with self._cond:
+                    self._queue.extendleft(reversed(batch))
+                return
+
+    def _peer_gone(self, conn: Any) -> bool:
+        try:
+            return bool(conn.poll(0))
+        except (OSError, EOFError):
+            return True
+
+    def _take(self) -> List[Dict[str, str]]:
+        with self._cond:
+            if not self._queue:
+                self._cond.wait(0.5)
+            batch = self._pop()
+        if batch:
+            return batch
+        # 队列空下来了：把 stderr 攒着的半截刷出来，再去拿一次
+        hook = self._pending
+        if hook is not None:
+            hook()
+        with self._cond:
+            return self._pop()
+
+    def _pop(self) -> List[Dict[str, str]]:
+        if not self._queue:
+            return []
+        batch = [self._queue.popleft()]
+        while self._queue and len(batch) < LOG_BATCH_MAX:
+            batch.append(self._queue.popleft())
+        return batch
+
+    def _flush_dropped(self, conn: Any) -> None:
+        with self._cond:
+            dropped, self._dropped = self._dropped, 0
+        if not dropped:
+            return
+        with contextlib.suppress(Exception):
+            conn.send([{"level": "warning", "event": f"[QQBotUID] 核心不在线期间丢弃了 {dropped} 条日志"}])
+
+
+def _event_text(record: logging.LogRecord) -> str:
+    """structlog 把事件塞在 record.msg 这个 dict 里，普通 logging 才是模板串。"""
+    msg = record.msg
+    if isinstance(msg, dict):
+        return str(msg.get("event", ""))
+    try:
+        return record.getMessage()
+    except Exception:
+        return str(msg)
+
+
+class MemoryRelay(logging.Handler):
+    """日志进内存队列，由 LogPipe 的后台线程发给核心；本进程不额外落盘、不阻塞。"""
+
+    def __init__(self, pipe: LogPipe, level: int = RELAY_LEVEL) -> None:
+        super().__init__(level)
+        self._pipe = pipe
+
+    def emit(self, record: logging.LogRecord) -> None:
+        text = _event_text(record)
+        if record.exc_info:
+            text = f"{text}\n{''.join(traceback.format_exception(*record.exc_info)).rstrip()}"
+        self._pipe.put(record.levelname.lower(), text)
+
+
+class _StderrRelay(io.TextIOBase):
+    """接住 stderr：stdout/stderr 都是 DEVNULL，traceback 不接就彻底没了。
+
+    这里只攒不发 —— traceback 是一行一行写出来的，逐行发就成一堆碎日志了；
+    管道空闲时（约 0.5s）会回来调 ``flush()``，整段一次发出去。
+    """
+
+    def __init__(self, pipe: LogPipe) -> None:
+        self._pipe = pipe
+        self._buffer = ""
+        self._lock = threading.Lock()
+        pipe.set_pending_flush(self.flush)
+
+    def writable(self) -> bool:
+        return True
+
+    def write(self, text: str) -> int:
+        with self._lock:
+            self._buffer += text
+            big = len(self._buffer) >= 8192
+        if big:
+            self.flush()
+        return len(text)
+
+    def flush(self) -> None:
+        with self._lock:
+            text, self._buffer = self._buffer.strip(), ""
+        if text:
+            self._pipe.put("error", text)
+
+
+def _utf8_stdio() -> None:
+    """stdout/stderr 被重定向到 DEVNULL 时是 GBK，写 emoji 会抛 UnicodeEncodeError，
+    logging 就把「--- Logging error ---」刷到 stderr。只把错误处理改成 replace 就够，
+    编码保持不变，免得手动跑 daemon.py 时在 GBK 控制台上变成乱码。"""
+    for name in ("stdout", "stderr"):
+        stream = getattr(sys, name, None)
+        if stream is None:
+            continue
+        with contextlib.suppress(Exception):
+            stream.reconfigure(errors="replace")
+
+
+def redirect_stderr(pipe: LogPipe) -> None:
+    """supervisor 把 stderr 丢进 DEVNULL，不接住的话 traceback 会彻底消失。"""
+    sys.stderr = _StderrRelay(pipe)
+
+
+def install_thread_hook() -> None:
+    """线程里没人接的异常默认只写 stderr，这里收回到日志。"""
+
+    def _hook(args: Any) -> None:
+        name = getattr(args.thread, "name", "")
+        logger.critical(
+            f"[QQBotUID] 线程 {name} 未捕获异常",
+            exc_info=(args.exc_type, args.exc_value, args.exc_traceback),
+        )
+
+    threading.excepthook = _hook
+
+
+def install_error_relay(pipe: LogPipe) -> None:
+    """daemon 侧唯一的出口：全量日志都往管道里送一份。"""
+    logging.getLogger("GsCore").addHandler(MemoryRelay(pipe))
+
+
+def log_loop_exception(loop: Any, context: Dict[str, Any]) -> None:
+    """asyncio 里没人接的异常默认只写 asyncio logger，这里收回来。"""
+    error = context.get("exception")
+    message = str(context.get("message") or "")
+    if isinstance(error, BaseException):
+        logger.critical(f"[QQBotUID] 未捕获的异步异常: {message}", exc_info=error)
+    else:
+        logger.critical(f"[QQBotUID] 未捕获的异步异常: {message}")
 
 
 def pid_alive(pid: int) -> bool:
@@ -330,6 +586,7 @@ class Daemon:
         self._plugin_cfg = _plugin_cfg_stamp()
 
     async def run(self) -> int:
+        asyncio.get_running_loop().set_exception_handler(log_loop_exception)
         if lock_alive():
             logger.error(
                 f"[QQBotUID] 检测到另一个 daemon 还在运行（{_LOCK.name} 有新鲜心跳），本次启动退出；"
@@ -441,6 +698,12 @@ class Daemon:
 
 
 def main() -> int:
+    _utf8_stdio()
+    pipe = LogPipe(log_pipe_address())
+    pipe.start()
+    install_error_relay(pipe)
+    redirect_stderr(pipe)
+    install_thread_hook()
     daemon = Daemon()
     try:
         return asyncio.run(daemon.run())
@@ -450,6 +713,8 @@ def main() -> int:
     except Exception as e:
         logger.exception(f"[QQBotUID] 独立进程异常退出: {e}")
         return 1
+    finally:
+        pipe.close()
 
 
 if __name__ == "__main__":

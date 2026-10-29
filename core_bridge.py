@@ -38,19 +38,6 @@ def _build_scope(bot_id: str) -> Scope:
     }
 
 
-def log_core_frame(msg_type: str, data: object) -> None:
-    level = msg_type[4:].lower()
-    text = str(data or "")
-    if level == "error":
-        logger.error(f"[早柚] {text}")
-    elif level == "warning":
-        logger.warning(f"[早柚] {text}")
-    elif level == "success":
-        logger.success(f"[早柚] {text}")
-    else:
-        logger.info(f"[早柚] {text}")
-
-
 class CoreSocket:
     def __init__(self, bot_id: str, on_send: Callable[[bytes], Awaitable[None]]) -> None:
         self._on_send = on_send
@@ -149,10 +136,6 @@ class CoreBridge:
             send = msgjson.decode(body, type=MessageSend)
         except (DecodeError, ValidationError) as e:
             logger.warning(f"[QQBotUID] 核心下发的帧无法解析，已跳过: {e}")
-            return
-        content = send.content or []
-        if content and content[0].type is not None and content[0].type.startswith("log_"):
-            log_core_frame(content[0].type, content[0].data)
             return
         if send.bot_self_id:
             target = self._targets.get(send.bot_self_id)

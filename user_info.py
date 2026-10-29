@@ -121,10 +121,6 @@ class UserRecorder:
         if self._task is None or self._task.done():
             self._task = asyncio.create_task(self._loop(), name="QQBotUID.user_recorder")
 
-    @property
-    def pending_count(self) -> int:
-        return len(self._pending)
-
     async def _loop(self) -> None:
         while self._pending:
             await asyncio.sleep(self.flush_seconds)
