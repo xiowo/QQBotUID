@@ -43,6 +43,7 @@ from .qq_api import (
 )
 from .ws_api import ACTIVE_TEST, handle_control
 from .convert import (
+    at_tag,
     send_endpoint,
     build_keyboard,
     is_bot_message,
@@ -197,6 +198,7 @@ def _iter_md_images(content: str) -> List[Tuple[int, int, int]]:
 
 
 _MD_AT_PATTERN = re.compile(r"<@!?[A-Za-z0-9_\-]+>")
+_AT_TAG_PATTERN = re.compile(r'<@!?[A-Za-z0-9_\-]+>|<qqbot-at-user id="[^"]*"\s*/>|<qqbot-at-everyone />')
 
 
 def _msg_seq() -> int:
@@ -213,7 +215,7 @@ def _platform_selected(config_key: str, platform: str) -> bool:
 
 def _strip_at(text: str, target_type: str) -> str:
     """过滤私聊@"""
-    return _MD_AT_PATTERN.sub("", text) if target_type == "direct" else text
+    return _AT_TAG_PATTERN.sub("", text) if target_type == "direct" else text
 
 
 _REPLY_TARGETS = {"group": "group", "direct": "direct", "channel": "channel", "sub_channel": "sub_channel"}
@@ -818,7 +820,7 @@ class QQBotUID:
         pieces: List[Tuple[str, bool]] = []
         mentions = [str(item.data) for item in items if item.type == "at" and item.data]
         if mentions and send.target_type == "group":
-            pieces.append(("".join(f'<qqbot-at-user id="{mention}" />' for mention in mentions), False))
+            pieces.append(("".join(at_tag(mention) for mention in mentions), False))
         for index, item in enumerate(items):
             if item.type in {"markdown", "template_markdown"}:
                 text_piece = _md_text(item)

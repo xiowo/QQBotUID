@@ -599,13 +599,23 @@ def event_to_receive(
     )
 
 
+AT_EVERYONE_TAG = "<qqbot-at-everyone />"
+
+
+def at_tag(data: Any) -> str:
+    """at 转官方标签：all 走 at-everyone，其余走 at-user"""
+    if str(data or "").strip().lower() == "all":
+        return AT_EVERYONE_TAG
+    return f'<qqbot-at-user id="{data}" />'
+
+
 def messages_to_plain_text(messages: Iterable[Message]) -> str:
     parts: List[str] = []
     for msg in messages:
         if msg.type == "text" and msg.data is not None:
             parts.append(str(msg.data))
         elif msg.type == "at" and msg.data is not None:
-            parts.append(f"<@{msg.data}>")
+            parts.append(at_tag(msg.data))
         elif msg.type == "record":
             parts.append("[语音]")
         elif msg.type == "video":
