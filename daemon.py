@@ -26,6 +26,7 @@ if str(_CORE_ROOT) not in sys.path:
 
 from gsuid_core.logger import logger  # noqa: E402
 from gsuid_core.data_store import CONFIGS_PATH, get_res_path  # noqa: E402
+from gsuid_core.utils.plugins_config.gs_config import bm_config  # noqa: E402
 
 _MODULES = (
     "bots_store",
@@ -52,6 +53,11 @@ _WATCHED = ("config.json", "advanced_config.json", "bots.json")
 WATCH_INTERVAL = 3.0
 
 _PIC_CONFIG = CONFIGS_PATH / "pic_upload_config.json"
+
+# 核心侧的配置（按钮 / markdown 平台列表等）。
+# daemon 是独立进程，这类配置在 import 时读一次就常驻内存，核心控制台保存后
+# 不会同步过来，发送时就会一直按旧值判断要不要发 markdown —— 所以自己盯着重读。
+_CORE_CONFIGS = (bm_config,)
 
 _LOCK = _DATA_DIR / "daemon.lock"
 LOCK_TTL = 30.0
@@ -572,6 +578,13 @@ def _plugin_cfg_stamp() -> bytes:
     return digest.digest()
 
 
+def _core_cfg_stamp() -> bytes:
+    digest = hashlib.blake2b(digest_size=16)
+    for config in _CORE_CONFIGS:
+        digest.update(_digest(Path(config.CONFIG_PATH)))
+    return digest.digest()
+
+
 def _module(name: str) -> Any:
     return sys.modules[f"plugins.QQBotUID.{name}"]
 
@@ -584,6 +597,7 @@ class Daemon:
         self._stamp: tuple[bytes, ...] = ()
         self._pic = _pic_stamp()
         self._plugin_cfg = _plugin_cfg_stamp()
+        self._core_cfg = _core_cfg_stamp()
 
     async def run(self) -> int:
         asyncio.get_running_loop().set_exception_handler(log_loop_exception)
@@ -617,6 +631,16 @@ class Daemon:
         config_mod.qqbotuid_config.update_config()
         config_mod.advanced_config.update_config()
         await self._refresh_image_host()
+
+    async def _refresh_core_config(self) -> None:
+        """重读核心侧的按钮 / markdown 平台配置。"""
+        stamp = _core_cfg_stamp()
+        if stamp == self._core_cfg:
+            return
+        for config in _CORE_CONFIGS:
+            config.update_config()
+        self._core_cfg = _core_cfg_stamp()
+        logger.info("[QQBotUID] 核心按钮/MD 配置有变动，已重新读取")
 
     async def _refresh_image_host(self) -> None:
         pic = _pic_stamp()
@@ -682,6 +706,7 @@ class Daemon:
         while True:
             await asyncio.sleep(WATCH_INTERVAL)
             _touch_lock()
+            await self._refresh_core_config()
             await self._refresh_image_host()
             if _config_stamp() == self._stamp:
                 continue
