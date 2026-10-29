@@ -91,6 +91,19 @@ FAST_RETRY_FLOOR_MS = 1000
 _BROKEN_IMAGE_DATA_PATTERN = re.compile(r"Message\(type='image', data='(?P<data>[^']*)'")
 # markdown 图片尺寸
 _MD_SIZE_PATTERN = re.compile(r"#(?P<w>\d+)px\s*#(?P<h>\d+)px")
+# 本地绝对路径：Windows 盘符 / UNC / POSIX
+_LOCAL_IMAGE_PATH_PATTERN = re.compile(r"^(?:[A-Za-z]:[\\/]|\\\\|/)")
+
+
+def _local_image_path(target: str) -> str:
+    """markdown 图片地址是本地文件时返回文件系统路径，否则返回空串。"""
+    path = target[7:] if target.startswith("file://") else target
+    if "://" in path:
+        return ""
+    if len(path) > 3 and path[0] == "/" and path[2] == ":":
+        path = path[1:]
+    return path if _LOCAL_IMAGE_PATH_PATTERN.match(path) else ""
+
 
 # 主动消息权限测试
 ACTIVE_TEST_TEXT = "✅主动权限确认成功"
@@ -822,7 +835,8 @@ class QQBotUID:
             pieces.append(("".join(f'<qqbot-at-user id="{mention}" />' for mention in mentions), False))
         for index, item in enumerate(items):
             if item.type == "text" and item.data is not None:
-                pieces.append((_MD_AT_PATTERN.sub("", str(item.data)), False))
+                text_piece = _MD_AT_PATTERN.sub("", str(item.data))
+                pieces.append((await self._resolve_markdown_images(text_piece), False))
             elif item.type == "image" and isinstance(item.data, str):
                 material = await self.material_image(item.data, _size_after(items, index))
                 if material is not None:
@@ -848,11 +862,16 @@ class QQBotUID:
         for start, alt_end, end in _iter_md_images(content):
             target = content[alt_end + 2 : end - 1]
             broken = _BROKEN_IMAGE_DATA_PATTERN.search(target)
-            if broken is None:
-                continue
+            if broken is not None:
+                image_data = broken.group("data")
+            else:
+                local_path = _local_image_path(target)
+                if not local_path:
+                    continue
+                image_data = f"file://{local_path}"
             alt = content[start + 2 : alt_end] or "图片"
             # alt 里的 `#宽px #高px` 保留，核心没给就用图片本身算出来的
-            material = await self.material_image(broken.group("data"), _alt_size(alt))
+            material = await self.material_image(image_data, _alt_size(alt))
             parts.append(content[cursor:start])
             if material is not None:
                 parts.append(f"![{_with_size(alt, material.size)}]({material.url})")
