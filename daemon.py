@@ -678,23 +678,56 @@ class Daemon:
         await self._refresh_config()
         config_mod = _module("config")
         url = core_ws_url(config_mod.QQBotUIDConfig.from_config())
-        await self.stop_adapters()
+        configs = config_mod.get_qqbotuid_configs()
         if url != self._url:
             logger.info(f"[QQBotUID] 核心地址变成 {url}，重连")
+            await self.stop_adapters()
             await self._reconnect(url)
-        configs = config_mod.get_qqbotuid_configs()
+            await self._spawn_adapters(configs)
+            return
+        await self._sync_adapters(configs)
+
+    async def _start_adapter(self, cfg: Any) -> None:
+        try:
+            adapter = _module("runner").QQBotUID(cfg, self.bridge)
+            await adapter.start()
+            self.adapters.append(adapter)
+        except Exception as e:
+            logger.exception(f"[QQBotUID] Bot 启动失败: appid={cfg.appid}, err={e}")
+
+    async def _spawn_adapters(self, configs: list[Any]) -> None:
         if not configs:
             logger.warning("[QQBotUID] 没有启用中的机器人，等配置变更")
             return
-        runner_mod = _module("runner")
         for cfg in configs:
-            try:
-                adapter = runner_mod.QQBotUID(cfg, self.bridge)
-                await adapter.start()
-                self.adapters.append(adapter)
-            except Exception as e:
-                logger.exception(f"[QQBotUID] Bot 启动失败: appid={cfg.appid}, err={e}")
+            await self._start_adapter(cfg)
         logger.success(f"[QQBotUID] 已启动 {len(self.adapters)} 个机器人")
+
+    async def _sync_adapters(self, configs: list[Any]) -> None:
+        """增量同步配置：能热更新就不断线。"""
+        pending = {cfg.appid: cfg for cfg in configs}
+        kept: list[Any] = []
+        rebuild: list[Any] = []
+        for adapter in self.adapters:
+            fresh = pending.pop(adapter.config.appid, None)
+            if fresh is None:
+                await adapter.stop()
+                logger.info(f"[QQBotUID] 机器人 {adapter.config.appid} 已下线")
+                continue
+            if fresh.connection_key == adapter.config.connection_key:
+                adapter.apply_config(fresh)
+                kept.append(adapter)
+                continue
+            logger.info(f"[QQBotUID] 机器人 {fresh.appid} 连接参数有变动，重建连接")
+            await adapter.stop()
+            rebuild.append(fresh)
+        self.adapters = kept
+        for cfg in list(pending.values()) + rebuild:
+            await self._start_adapter(cfg)
+        if not self.adapters:
+            logger.warning("[QQBotUID] 没有启用中的机器人，等配置变更")
+            return
+        logger.success(f"[QQBotUID] 配置已同步，当前 {len(self.adapters)} 个机器人")
 
     async def stop_adapters(self) -> None:
         adapters, self.adapters = self.adapters, []
@@ -710,7 +743,7 @@ class Daemon:
             await self._refresh_image_host()
             if _config_stamp() == self._stamp:
                 continue
-            logger.info("[QQBotUID] 配置文件有变动，重载机器人")
+            logger.info("[QQBotUID] 配置文件有变动，同步配置")
             await self.reload()
             self._stamp = _config_stamp()
 

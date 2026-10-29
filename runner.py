@@ -291,6 +291,10 @@ class QQBotUID:
     def self_id(self) -> str:
         return self.config.self_id
 
+    def apply_config(self, config: QQBotUIDConfig) -> None:
+        self.config = config
+        self.tm.config = config
+
     async def start(self) -> None:
         self.config.validate()
         self._closed = False

@@ -361,6 +361,25 @@ class QQBotUIDConfig:
     def self_id(self) -> str:
         return self.bot_self_id or self.appid
 
+    @property
+    def connection_key(self) -> tuple:
+        """决定「要不要重连」的那部分配置。"""
+        return (
+            self.appid,
+            self.secret,
+            self.mode,
+            self.bot_self_id,
+            self.api_base,
+            self.token_base,
+            self.gateway_url,
+            self.client_name,
+            self.reconnect_interval,
+            self.webhook_enabled,
+            self.webhook_host,
+            self.webhook_port,
+            self.webhook_path,
+        )
+
     @classmethod
     def from_config(cls) -> "QQBotUIDConfig":
         """读一份全局默认值；AppID/Secret 和收发模式由每个机器人的清单行单独提供。"""
