@@ -713,13 +713,13 @@ class QQBotUID:
     async def build_send_payload(self, send: MessageSend, msg_id: str) -> Dict[str, Any]:
         assert send.content is not None
         platform = self.config.platform_bot_id
-        use_md = _platform_selected("SendMDPlatform", platform)
         use_buttons = _platform_selected("SendButtonsPlatform", platform)
 
         markdown = next((m for m in send.content if m.type in {"markdown", "template_markdown"}), None)
         image = next((m for m in send.content if m.type == "image" and isinstance(m.data, str)), None)
         buttons = next((m for m in send.content if m.type in {"buttons", "template_buttons"}), None)
         text = _strip_at(messages_to_plain_text(send.content), send.target_type or "")
+        use_md = markdown is not None or _platform_selected("SendMDPlatform", platform)
 
         payload: Dict[str, Any] = {"msg_seq": _msg_seq()}
         if msg_id:
