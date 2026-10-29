@@ -26,6 +26,7 @@ _BLOCK_IMAGE_PATTERN = re.compile(r"(?im)^\s*\[附件\d*\].*?类型\s*:\s*图片
 _BLOCK_ATTACHMENT_LINE_PATTERN = re.compile(r"(?im)^[ \t]*\[附件\d*\][^\n]*$")
 _BARE_URL_PATTERN = re.compile(r"<?https?://\S+>?")
 _BIDI_CONTROL_PATTERN = re.compile(r"[\u200e\u200f\u202a-\u202e\u2066-\u2069]")
+_LEADING_COMMAND_PATTERN = re.compile(r"^[\s\u3000/]+")
 _SCENE_REF_KEYS = ("ref_msg_idx", "ref_msg_id", "reference_id", "message_reference_id")
 
 _SCENE_OWN_IDX_KEY = "msg_idx"
@@ -40,6 +41,11 @@ FORWARD_KINDS = {"node", "nodes", "forward", "forward_msg", "forward_message"}
 
 def _strip_attachment_markers(value: str) -> str:
     return _ATTACHMENT_MARKER_PATTERN.sub("", value)
+
+
+def _strip_leading_command(text: str) -> str:
+    """去掉消息开头的空白和 /，让「/签到」「  /签到」也能命中命令"""
+    return _LEADING_COMMAND_PATTERN.sub("", text)
 
 
 def _clean_text(content: Any) -> str:
@@ -545,7 +551,9 @@ def event_to_receive(
     if text_node_items:
         content.append(Message(type="node", data=text_node_items))
     elif text:
-        content.append(Message(type="text", data=text))
+        text = _strip_leading_command(text)
+        if text:
+            content.append(Message(type="text", data=text))
 
     for image_url in inline_image_urls:
         _append_unique_image(content, seen_images, image_url)
