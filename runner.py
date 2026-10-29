@@ -138,18 +138,6 @@ def _with_size(alt: str, size: Optional[Tuple[int, int]]) -> str:
     return f"{alt} #{size[0]}px #{size[1]}px"
 
 
-def _image_segments(content: List[Message]) -> List[Tuple[str, Optional[Tuple[int, int]]]]:
-    segments: List[Tuple[str, Optional[Tuple[int, int]]]] = []
-    for item in content:
-        if item.type == "image" and isinstance(item.data, str):
-            segments.append((item.data, None))
-        elif item.type == "image_size" and segments and segments[-1][1] is None:
-            data = item.data
-            if isinstance(data, (tuple, list)) and len(data) == 2:
-                segments[-1] = (segments[-1][0], (int(data[0]), int(data[1])))
-    return segments
-
-
 _PLAIN_LABELS = {"record": "[语音]", "video": "[视频]", "file": "[文件]"}
 
 
@@ -170,12 +158,16 @@ def _join_pieces(pieces: List[Tuple[str, bool]]) -> str:
     for text, is_image in pieces:
         if not text:
             continue
-        if is_image and out and not out.endswith("\n"):
-            out += "\n"
-        out += text
         if is_image:
-            out += "\n"
-    return out[:-1] if out.endswith("\n") else out
+            out = out.rstrip("\n")
+            if out:
+                out += "\n\n"
+            out += f"{text.strip()}\n\n"
+            continue
+        if out.endswith("\n\n"):
+            text = text.lstrip("\n")
+        out += text
+    return out.rstrip("\n")
 
 
 def _iter_md_images(content: str) -> List[Tuple[int, int, int]]:
@@ -246,20 +238,19 @@ def _duration_seconds(value: Any) -> Optional[int]:
     return None
 
 
-def _markdown_body(markdown: Optional[Message], text: str, send: MessageSend) -> Dict[str, Any]:
-    """markdown 消息"""
-    if markdown is not None and isinstance(markdown.data, dict):
-        body = dict(markdown.data)
-        content = str(markdown.data.get("content") or "")
+def _md_text(item: Message) -> str:
+    data = item.data
+    if isinstance(data, dict):
+        content = str(data.get("content") or "")
     else:
-        body = {}
-        content = str(markdown.data) if markdown is not None and markdown.data is not None else text
-    content = _MD_AT_PATTERN.sub("", content)
-    mentions = [str(item.data) for item in send.content or [] if item.type == "at" and item.data]
-    if mentions and send.target_type == "group":
-        content = "".join(f'<qqbot-at-user id="{mention}" />' for mention in mentions) + content
-    body["content"] = content
-    return body
+        content = "" if data is None else str(data)
+    return _MD_AT_PATTERN.sub("", content)
+
+
+def _markdown_body(markdown: Optional[Message]) -> Dict[str, Any]:
+    if markdown is not None and isinstance(markdown.data, dict):
+        return dict(markdown.data)
+    return {}
 
 
 def _user_agent(client_name: str) -> str:
@@ -817,24 +808,23 @@ class QQBotUID:
         return payload
 
     async def _build_markdown(self, send: MessageSend, markdown: Optional[Message], text: str) -> Dict[str, Any]:
-        body = _markdown_body(markdown, text, send)
-        if markdown is None:
-            content = await self._segments_markdown(send)
-        else:
-            content = await self._resolve_markdown_images(str(body.get("content") or ""))
-            content = await self._append_segment_images(content, send.content or [])
-        body["content"] = content
+        body = _markdown_body(markdown)
+        body["content"] = await self._segments_markdown(send) or text
         return body
 
     async def _segments_markdown(self, send: MessageSend) -> str:
-        """把消息段按原顺序拼成 markdown，图片就地插入。"""
+        """把消息段按原顺序拼成 markdown，正文和图片都就地插入。"""
         items = send.content or []
         pieces: List[Tuple[str, bool]] = []
         mentions = [str(item.data) for item in items if item.type == "at" and item.data]
         if mentions and send.target_type == "group":
             pieces.append(("".join(f'<qqbot-at-user id="{mention}" />' for mention in mentions), False))
         for index, item in enumerate(items):
-            if item.type == "text" and item.data is not None:
+            if item.type in {"markdown", "template_markdown"}:
+                text_piece = _md_text(item)
+                if text_piece:
+                    pieces.append((await self._resolve_markdown_images(text_piece), False))
+            elif item.type == "text" and item.data is not None:
                 text_piece = _MD_AT_PATTERN.sub("", str(item.data))
                 pieces.append((await self._resolve_markdown_images(text_piece), False))
             elif item.type == "image" and isinstance(item.data, str):
@@ -844,15 +834,6 @@ class QQBotUID:
             elif item.type in _PLAIN_LABELS:
                 pieces.append((_PLAIN_LABELS[item.type], False))
         return _join_pieces(pieces)
-
-    async def _append_segment_images(self, content: str, items: List[Message]) -> str:
-        for image_data, size in _image_segments(items):
-            material = await self.material_image(image_data, size)
-            if material is None:
-                continue
-            alt = _with_size("图片", material.size)
-            content = f"{content}\n\n![{alt}]({material.url})" if content else f"![{alt}]({material.url})"
-        return content
 
     async def _resolve_markdown_images(self, content: str) -> str:
         if "![" not in content:
