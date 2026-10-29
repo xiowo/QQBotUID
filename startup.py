@@ -36,10 +36,13 @@ class _Runtime:
         await ensure_user_table()
         if base.daemon_mode:
             if not base.enabled:
+                await self.supervisor.reap()
                 logger.info(t("[QQBotUID] 总开关已关闭，跳过启动"))
                 return
             await self.supervisor.start()
             return
+        # 走同进程模式，先把可能残留的独立进程收掉
+        await self.supervisor.reap()
         configs = get_qqbotuid_configs()
         if not configs:
             logger.info(t("[QQBotUID] WebUI 配置开关已关闭，跳过启动"))

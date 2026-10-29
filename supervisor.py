@@ -14,7 +14,7 @@ from multiprocessing.connection import Client
 from gsuid_core.i18n import t
 from gsuid_core.logger import logger
 
-from .config import maintenance_rule
+from .config import QQBotUIDConfig, maintenance_rule
 from .daemon import EXIT_LOCKED, lock_pid, pid_alive, lock_started_at, log_pipe_address, log_pipe_authkey
 
 DAEMON_SCRIPT = Path(__file__).with_name("daemon.py")
@@ -86,6 +86,10 @@ def _spawn_kwargs() -> dict[str, Any]:
 
 def _keep_daemon() -> bool:
     return maintenance_rule() is not None
+
+
+def _wants_daemon() -> bool:
+    return bool(QQBotUIDConfig.from_config().daemon_mode)
 
 
 def _plugin_mtime() -> float:
@@ -306,10 +310,11 @@ class DaemonSupervisor:
             with contextlib.suppress(asyncio.CancelledError):
                 await watch
         proc, self._proc = self._proc, None
-        pid, self._pid = self._pid, 0
+        pid = self._pid or lock_pid()
+        self._pid = 0
         if proc is None and not pid:
             return
-        if _keep_daemon():
+        if _keep_daemon() and _wants_daemon():
             logger.info(f"[QQBotUID] 断连维护提示已开启，保留独立进程 pid={pid} 继续值守")
             return
         if proc is not None and proc.poll() is None:
@@ -317,6 +322,15 @@ class DaemonSupervisor:
         target = lock_pid() or pid
         if target and pid_alive(target):
             await self._terminate_pid(target)
+
+    async def reap(self) -> None:
+        """收掉残留的独立进程。"""
+        pid = self._pid or lock_pid()
+        self._forget()
+        if not pid or not pid_alive(pid):
+            return
+        logger.info(f"[QQBotUID] 结束残留的独立进程 pid={pid}")
+        await self._terminate_pid(pid)
 
     async def _terminate(self, proc: "subprocess.Popen[bytes]", pid: int) -> None:
         proc.terminate()
