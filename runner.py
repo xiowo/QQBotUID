@@ -33,8 +33,8 @@ from .qq_api import (
     QQMateriaHost,
     QQTokenManager,
     brief_text,
+    file_bytes,
     image_size,
-    image_bytes,
     public_image_url,
     cached_group_name,
     core_upload_image,
@@ -726,7 +726,8 @@ class QQBotUID:
             payload = await self.build_send_payload(send, msg_id)
             markdown_body = payload.get("markdown")
             has_markdown = isinstance(markdown_body, dict) and bool(str(markdown_body.get("content") or "").strip())
-            if not payload.get("content") and not has_markdown and not payload.get("media"):
+            has_card = bool(payload.get("card"))
+            if not payload.get("content") and not has_markdown and not payload.get("media") and not has_card:
                 logger.warning(t("[QQBotUID] 没有可发送的内容，已跳过: {target_id}", target_id=send.target_id))
                 return None, "没有可发送的内容"
             ok, data = await self.sender.post_json(endpoint, payload)
@@ -798,6 +799,8 @@ class QQBotUID:
         markdown = next((m for m in send.content if m.type in {"markdown", "template_markdown"}), None)
         image = next((m for m in send.content if m.type == "image" and isinstance(m.data, str)), None)
         buttons = next((m for m in send.content if m.type in {"buttons", "template_buttons"}), None)
+        card = next((m for m in send.content if m.type == "card" and isinstance(m.data, dict)), None)
+        file_msg = next((m for m in send.content if m.type == "file" and isinstance(m.data, str) and m.data), None)
         text = _strip_at(messages_to_plain_text(send.content), send.target_type or "")
         use_md = markdown is not None or _platform_selected("SendMDPlatform", platform)
 
@@ -810,6 +813,27 @@ class QQBotUID:
                 "message_id": str(reply_id.data),
                 "ignore_get_message_error": True,
             }
+
+        if card is not None and isinstance(card.data, dict):
+            payload.update({"msg_type": 8, "card": card.data})
+            return payload
+
+        if file_msg is not None and send.target_id:
+            file_info = await self.sender.upload_file(
+                send.target_type or "direct",
+                send.target_id,
+                str(file_msg.data),
+            )
+            if file_info:
+                payload.update({"msg_type": 7, "media": {"file_info": file_info}})
+                rest = _strip_at(
+                    messages_to_plain_text(item for item in send.content if item is not file_msg),
+                    send.target_type or "",
+                ).strip()
+                if rest:
+                    payload["content"] = rest
+                self._attach_buttons(payload, buttons, use_buttons)
+                return payload
 
         if use_md:
             payload.update({"msg_type": 2, "markdown": await self._build_markdown(send, markdown, text)})
@@ -893,7 +917,7 @@ class QQBotUID:
     ) -> Optional[MaterialImage]:
         public = public_image_url(image_data)
         if not public:
-            raw = await image_bytes(image_data)
+            raw = await file_bytes(image_data)
             if raw is None:
                 logger.warning(f"[QQBotUID] 取不到图片内容，MD 里跳过这张图: {image_data[:64]}")
                 return None
@@ -906,7 +930,7 @@ class QQBotUID:
             return uploaded
         if size:
             return MaterialImage(url=public, size=size)
-        raw = await image_bytes(image_data)
+        raw = await file_bytes(image_data)
         return MaterialImage(url=public, size=image_size(raw) if raw else None)
 
     @staticmethod

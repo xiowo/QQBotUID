@@ -211,24 +211,6 @@ def public_image_url(image_data: str) -> str:
     return url if url.startswith(("http://", "https://")) else ""
 
 
-async def image_bytes(image_data: str) -> Optional[bytes]:
-    if image_data.startswith("base64://"):
-        return _b64decode(image_data[9:])
-    if image_data.startswith("data:"):
-        return _b64decode(image_data.partition(",")[2])
-    if image_data.startswith("file://"):
-        path = Path(image_data[7:])
-        if not await asyncio.to_thread(path.is_file):
-            return None
-        return await asyncio.to_thread(path.read_bytes)
-    url = public_image_url(image_data)
-    if url:
-        async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as client:
-            resp = await client.get(url)
-        return resp.content if resp.status_code == 200 else None
-    return None
-
-
 def _b64decode(payload: str) -> Optional[bytes]:
     if not payload:
         return None
@@ -236,6 +218,41 @@ def _b64decode(payload: str) -> Optional[bytes]:
         return base64.b64decode(payload)
     except (ValueError, binascii.Error):
         return None
+
+
+_FILE_TYPE_FILE = 4
+
+
+def split_file_data(data: str) -> Tuple[str, str]:
+    name, sep, payload = data.partition("|")
+    if not sep:
+        return "", name.strip()
+    return name.strip(), payload.strip()
+
+
+async def file_bytes(payload: str) -> Optional[bytes]:
+    if payload.startswith("link://"):
+        payload = payload[7:]
+    if payload.startswith(("http://", "https://")):
+        try:
+            async with httpx.AsyncClient(timeout=60.0, follow_redirects=True) as client:
+                resp = await client.get(payload)
+        except httpx.HTTPError as e:
+            logger.warning(f"[QQBotUID] 文件下载失败: {payload[:64]} {e}")
+            return None
+        return resp.content if resp.status_code == 200 else None
+    if payload.startswith("data:"):
+        return _b64decode(payload.partition(",")[2])
+    if payload.startswith("file://"):
+        path = Path(payload[7:])
+        if not await asyncio.to_thread(path.is_file):
+            return None
+        return await asyncio.to_thread(path.read_bytes)
+    if not payload.startswith("base64://"):
+        path = Path(payload)
+        if await asyncio.to_thread(path.is_file):
+            return await asyncio.to_thread(path.read_bytes)
+    return _b64decode(payload.removeprefix("base64://"))
 
 
 def image_meta(raw: bytes) -> Tuple[str, str]:
@@ -519,7 +536,7 @@ class QQSender:
             file_info = await self._upload_json(endpoint, {"srv_send_msg": False, "file_type": file_type, "url": url})
             if file_info:
                 return file_info
-        raw = await image_bytes(image_data)
+        raw = await file_bytes(image_data)
         if raw is None:
             logger.warning(f"[QQBotUID] 取不到图片内容，跳过上传: {image_data[:64]}")
             return None
@@ -531,6 +548,41 @@ class QQSender:
                 "file_data": base64.b64encode(raw).decode(),
             },
         )
+
+    async def upload_file(self, target_type: str, target_id: str, file_data: str) -> Optional[str]:
+        """file 段走 /files 上传，返回 file_info（发送时塞进 media）。"""
+        endpoint = _files_endpoint(target_type, target_id)
+        if not endpoint:
+            return None
+        name, payload = split_file_data(file_data)
+        if not payload:
+            logger.warning(f"[QQBotUID] 文件内容为空，跳过发送: {name or '-'}")
+            return None
+        url = payload.removeprefix("link://")
+        if url.startswith(("http://", "https://")):
+            body: Dict[str, Any] = {"srv_send_msg": False, "file_type": _FILE_TYPE_FILE, "url": url}
+            if name:
+                body["file_name"] = name
+            file_info = await self._upload_json(endpoint, body)
+            if file_info:
+                logger.info(f"[QQBotUID] 文件上传成功: {name or url[:48]}")
+                return file_info
+        raw = await file_bytes(payload)
+        if raw is None:
+            logger.warning(f"[QQBotUID] 取不到文件内容，跳过发送: {name or payload[:64]}")
+            return None
+        file_info = await self._upload_json(
+            endpoint,
+            {
+                "srv_send_msg": False,
+                "file_type": _FILE_TYPE_FILE,
+                "file_name": name or "file",
+                "file_data": base64.b64encode(raw).decode(),
+            },
+        )
+        if file_info:
+            logger.info(f"[QQBotUID] 文件上传成功: {name or 'file'} {_kb(len(raw))}")
+        return file_info
 
     async def _upload_json(self, endpoint: str, payload: Dict[str, Any]) -> Optional[str]:
         logger.debug(f"[QQBotUID] 富媒体 POST {endpoint} {brief_text(payload)}")

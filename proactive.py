@@ -51,9 +51,6 @@ class PassiveWindow:
             return 0
         return max(self.reply_limit - used, 0)
 
-    def usable(self, msg_id: str) -> bool:
-        return self.remaining(msg_id) > 0
-
     def take(self, msg_id: str, count: int = 1) -> bool:
         """预占被动额度；并发下发时也不会超过平台上限。"""
         need = max(int(count), 1)
