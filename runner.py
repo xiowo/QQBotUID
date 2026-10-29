@@ -650,11 +650,8 @@ class QQBotUID:
             return None
         node = next((item for item in send.content if item.type == "node" and isinstance(item.data, list)), None)
         if node is not None:
-            items = node.data
-            if not self.passive.usable(send.msg_id):
-                self.proactive.submit(send.target_type, lambda: self.send_proactive_node(send, items))
-                return _Deferred()
-            return await self.send_node_items(send, items)
+            message_ids = await self.send_node_items(send, node.data, send.msg_id)
+            return message_ids or _Deferred()
         endpoint = send_endpoint(send)
         if endpoint is None:
             logger.warning(
@@ -665,10 +662,20 @@ class QQBotUID:
                 )
             )
             return None
-        if not self.passive.usable(send.msg_id):
+        if not self.passive.take(send.msg_id):
+            self._log_passive_fallback(send)
             self.proactive.submit(send.target_type, lambda: self.send_proactive(send, endpoint))
             return _Deferred()
         return await self.post_message(send, endpoint, send.msg_id)
+
+    def _log_passive_fallback(self, send: MessageSend) -> None:
+        """被动额度用完（5 次）或已过期，改走主动通道。"""
+        if not send.msg_id:
+            return
+        logger.debug(
+            f"[QQBotUID] 被动回复不可用（剩余 {self.passive.remaining(send.msg_id)} 次），"
+            f"转主动发送: {send.target_type}/{send.target_id} msg_id={send.msg_id}"
+        )
 
     async def active_test_reply(self, send: MessageSend, data: Any) -> str:
         """核心通用协议 gscore_qqbot_active_test"""
@@ -705,13 +712,6 @@ class QQBotUID:
         finally:
             await self.send_recall_ack(send, message_id)
 
-    async def send_proactive_node(self, send: MessageSend, items: Any) -> None:
-        message_ids: Optional[List[str]] = None
-        try:
-            message_ids = await self.send_node_items(send, items)
-        finally:
-            await self.send_recall_ack(send, message_ids)
-
     async def post_message(self, send: MessageSend, endpoint: str, msg_id: str) -> Optional[str]:
         message_id, _ = await self.post_message_detail(send, endpoint, msg_id)
         return message_id
@@ -740,7 +740,9 @@ class QQBotUID:
         finally:
             self.material.schedule_cleanup()
 
-    async def send_node_items(self, send: MessageSend, items: Any) -> Optional[List[str]]:
+    async def send_node_items(
+        self, send: MessageSend, items: Any, msg_id: str = ""
+    ) -> Optional[List[str]]:
         """node 降级多条消息发送"""
         endpoint = send_endpoint(send)
         if endpoint is None:
@@ -752,21 +754,37 @@ class QQBotUID:
                 )
             )
             return None
-        msg_id = send.msg_id if self.passive.usable(send.msg_id) else ""
         message_ids: List[str] = []
         for item in normalize_node_items(items):
-            part = MessageSend(
-                bot_id=send.bot_id,
-                bot_self_id=send.bot_self_id,
-                msg_id=send.msg_id,
-                target_type=send.target_type,
-                target_id=send.target_id,
-                content=[item],
-            )
-            message_id = await self.post_message(part, endpoint, msg_id)
-            if message_id:
-                message_ids.append(message_id)
+            if msg_id and self.passive.take(msg_id):
+                part = MessageSend(
+                    bot_id=send.bot_id,
+                    bot_self_id=send.bot_self_id,
+                    msg_id=send.msg_id,
+                    target_type=send.target_type,
+                    target_id=send.target_id,
+                    content=[item],
+                )
+                message_id = await self.post_message(part, endpoint, msg_id)
+                if message_id:
+                    message_ids.append(message_id)
+                continue
+            self.proactive.submit(send.target_type, lambda it=item: self._send_node_part(send, it))
         return message_ids or None
+
+    async def _send_node_part(self, send: MessageSend, item: Message) -> None:
+        endpoint = send_endpoint(send)
+        if endpoint is None:
+            return
+        part = MessageSend(
+            bot_id=send.bot_id,
+            bot_self_id=send.bot_self_id,
+            msg_id="",
+            target_type=send.target_type,
+            target_id=send.target_id,
+            content=[item],
+        )
+        await self.post_message(part, endpoint, "")
 
     async def build_send_payload(self, send: MessageSend, msg_id: str) -> Dict[str, Any]:
         assert send.content is not None

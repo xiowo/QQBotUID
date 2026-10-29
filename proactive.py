@@ -1,7 +1,7 @@
 import time
 import asyncio
 import contextlib
-from typing import Any, Set, Dict, List, Callable, Optional, Awaitable
+from typing import Any, Set, Dict, List, Tuple, Callable, Optional, Awaitable
 
 from gsuid_core.logger import logger
 
@@ -10,40 +10,62 @@ from .config import proactive_interval_ms
 ProactiveJob = Callable[[], Awaitable[Any]]
 
 PASSIVE_WINDOW_SECONDS = 300.0
+PASSIVE_REPLY_LIMIT = 5
 
 
 class PassiveWindow:
-    """记住最近收到的入站 msg_id；只有窗口内的才允许走被动回复。"""
+    """记住最近入站 msg_id 的时刻和已用次数；窗口内且未超次的才允许被动回复。"""
 
-    def __init__(self, window: float = PASSIVE_WINDOW_SECONDS, limit: int = 512) -> None:
+    def __init__(
+        self,
+        window: float = PASSIVE_WINDOW_SECONDS,
+        limit: int = 512,
+        reply_limit: int = PASSIVE_REPLY_LIMIT,
+    ) -> None:
         self.window = window
         self.limit = limit
-        self._seen: Dict[str, float] = {}
+        self.reply_limit = max(int(reply_limit), 1)
+        self._seen: Dict[str, Tuple[float, int]] = {}
 
     def mark(self, msg_id: str) -> None:
         key = str(msg_id or "")
         if not key:
             return
         now = time.monotonic()
-        self._seen[key] = now
+        used = self._seen.get(key, (now, 0))[1]
+        self._seen[key] = (now, used)
         if len(self._seen) > self.limit:
             self._prune(now)
 
-    def usable(self, msg_id: str) -> bool:
-        """msg_id过期，固定落到主动队列。"""
+    def remaining(self, msg_id: str) -> int:
+        """还能被动回复几次；0 表示必须降级主动。"""
         key = str(msg_id or "")
         if not key:
-            return False
-        marked = self._seen.get(key)
-        if marked is None:
-            return False
+            return 0
+        entry = self._seen.get(key)
+        if entry is None:
+            return 0
+        marked, used = entry
         if time.monotonic() - marked > self.window:
             self._seen.pop(key, None)
+            return 0
+        return max(self.reply_limit - used, 0)
+
+    def usable(self, msg_id: str) -> bool:
+        return self.remaining(msg_id) > 0
+
+    def take(self, msg_id: str, count: int = 1) -> bool:
+        """预占被动额度；并发下发时也不会超过平台上限。"""
+        need = max(int(count), 1)
+        key = str(msg_id or "")
+        if self.remaining(key) < need:
             return False
+        marked, used = self._seen[key]
+        self._seen[key] = (marked, used + need)
         return True
 
     def _prune(self, now: float) -> None:
-        for key in [k for k, ts in self._seen.items() if now - ts > self.window]:
+        for key in [k for k, (ts, _) in self._seen.items() if now - ts > self.window]:
             self._seen.pop(key, None)
 
 
