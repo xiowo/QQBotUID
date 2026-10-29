@@ -22,6 +22,7 @@ from gsuid_core.data_store import CONFIGS_PATH, get_res_path  # noqa: E402
 
 _MODULES = (
     "bots_store",
+    "commands",
     "config",
     "sign",
     "qq_api",
@@ -47,11 +48,12 @@ _PIC_CONFIG = CONFIGS_PATH / "pic_upload_config.json"
 
 _LOCK = _DATA_DIR / "daemon.lock"
 LOCK_TTL = 30.0
+_STARTED_AT = 0.0
 
 EXIT_LOCKED = 3
 
 
-def _pid_alive(pid: int) -> bool:
+def pid_alive(pid: int) -> bool:
     if pid <= 0:
         return False
     if sys.platform == "win32":
@@ -75,21 +77,42 @@ def _pid_alive(pid: int) -> bool:
     return True
 
 
-def _lock_alive() -> bool:
+def _lock_lines() -> list[str]:
+    try:
+        return _LOCK.read_text(encoding="utf-8").split()
+    except OSError:
+        return []
+
+
+def lock_pid() -> int:
     if not _LOCK.exists():
-        return False
+        return 0
     try:
         if time.time() - _LOCK.stat().st_mtime >= LOCK_TTL:
-            return False
-        pid = int(_LOCK.read_text(encoding="utf-8").strip() or 0)
-    except (OSError, ValueError):
-        return False
-    return _pid_alive(pid)
+            return 0
+        pid = int(_lock_lines()[0])
+    except (OSError, ValueError, IndexError):
+        return 0
+    return pid if pid_alive(pid) else 0
+
+
+def lock_started_at() -> float:
+    try:
+        return float(_lock_lines()[1])
+    except (ValueError, IndexError):
+        return 0.0
+
+
+def lock_alive() -> bool:
+    return lock_pid() > 0
 
 
 def _touch_lock() -> None:
+    global _STARTED_AT
+    if not _STARTED_AT:
+        _STARTED_AT = time.time()
     with contextlib.suppress(OSError):
-        _LOCK.write_text(str(os.getpid()), encoding="utf-8")
+        _LOCK.write_text(f"{os.getpid()}\n{_STARTED_AT:.0f}", encoding="utf-8")
 
 
 def _release_lock() -> None:
@@ -307,7 +330,7 @@ class Daemon:
         self._plugin_cfg = _plugin_cfg_stamp()
 
     async def run(self) -> int:
-        if _lock_alive():
+        if lock_alive():
             logger.error(
                 f"[QQBotUID] 检测到另一个 daemon 还在运行（{_LOCK.name} 有新鲜心跳），本次启动退出；"
                 f"确认没有残留进程后删掉 {_LOCK} 再试"

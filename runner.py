@@ -18,7 +18,15 @@ from gsuid_core.models import Message, MessageSend, MessageReceive, normalize_no
 from gsuid_core.utils.plugins_config.gs_config import bm_config
 
 from .sign import verify_and_respond
-from .config import QQBotUIDConfig, update_bot_name, group_name_enabled
+from .config import (
+    QQBotUIDConfig,
+    is_master,
+    update_bot_name,
+    maintenance_rule,
+    group_name_enabled,
+    maintenance_message,
+    master_only_enabled,
+)
 from .qq_api import (
     QQSender,
     MaterialImage,
@@ -183,6 +191,18 @@ def _platform_selected(config_key: str, platform: str) -> bool:
 def _strip_at(text: str, target_type: str) -> str:
     """过滤私聊@"""
     return _MD_AT_PATTERN.sub("", text) if target_type == "direct" else text
+
+
+_REPLY_TARGETS = {"group": "group", "direct": "direct", "channel": "channel", "sub_channel": "sub_channel"}
+
+
+def _reply_target_type(user_type: str) -> Optional[str]:
+    return _REPLY_TARGETS.get(str(user_type or ""))
+
+
+def _is_lifecycle(receive: MessageReceive) -> bool:
+    content = receive.content or []
+    return bool(content) and str(content[0].type or "").startswith("meta-")
 
 
 def _duration_seconds(value: Any) -> Optional[int]:
@@ -432,6 +452,8 @@ class QQBotUID:
             self._warn_unresolved_reference(payload, receive)
             self.passive.mark(receive.msg_id)
             self.users.observe(receive)
+            if await self.maintenance_reply(receive):
+                return
             await self.bridge.push(receive)
 
     def _skip_other_bot(self, payload: Dict[str, Any]) -> bool:
@@ -461,6 +483,49 @@ class QQBotUID:
                 elements=elements,
             )
         )
+
+    async def maintenance_reply(self, receive: MessageReceive) -> bool:
+        """维护期间用提示顶替核心的回复，返回 True 表示已回提示。"""
+        message = self._maintenance_message(receive)
+        if not message:
+            return False
+        target_type = _reply_target_type(receive.user_type)
+        if target_type is None:
+            return False
+        target_id = receive.user_id if target_type == "direct" else receive.group_id
+        if not target_id:
+            return False
+        send = MessageSend(
+            bot_id=receive.bot_id,
+            bot_self_id=receive.bot_self_id,
+            msg_id=receive.msg_id,
+            target_type=target_type,
+            target_id=target_id,
+            content=[Message(type="text", data=message)],
+        )
+        endpoint = send_endpoint(send)
+        if endpoint is None:
+            return False
+        logger.info(f"[QQBotUID] 维护中，已回提示: {target_type}/{target_id}")
+        await self.post_message(send, endpoint, receive.msg_id)
+        return True
+
+    def _maintenance_message(self, receive: MessageReceive) -> str:
+        """该回维护提示就返回文案；放行返回空串。"""
+        if _is_lifecycle(receive):
+            # 进群 / 退群这类事件不是「有人在说话」，别往群里刷维护提示
+            return ""
+        if master_only_enabled() and not is_master(receive.user_id):
+            return maintenance_message()
+        rule = maintenance_rule()
+        if rule is None:
+            return ""
+        active = getattr(self.bridge, "maintenance_active", None)
+        if not callable(active) or not active(rule.threshold):
+            return ""
+        if not rule.matches(messages_to_plain_text(receive.content or [])):
+            return ""
+        return rule.message
 
     async def start_webhook(self) -> None:
         self._webhook = shared_server(self.config.webhook_host, self.config.webhook_port)
@@ -492,7 +557,8 @@ class QQBotUID:
             if not self._skip_other_bot(body):
                 self.passive.mark(receive.msg_id)
                 self.users.observe(receive)
-                await self.bridge.push(receive)
+                if not await self.maintenance_reply(receive):
+                    await self.bridge.push(receive)
         if body.get("t") == "INTERACTION_CREATE":
             return web.json_response({"op": OP_CALLBACK_ACK, "code": 0})
         return web.json_response({})

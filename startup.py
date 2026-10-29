@@ -6,8 +6,9 @@ from gsuid_core.i18n import t
 from gsuid_core.logger import logger
 from gsuid_core.server import on_core_start, on_core_shutdown
 
-from .config import ROUTE_BOT_ID, QQBotUIDConfig, get_qqbotuid_configs
+from .config import ROUTE_BOT_ID, QQBotUIDConfig, maintenance_rule, get_qqbotuid_configs, refresh_plugin_options
 from .runner import QQBotUID
+from .commands import write_snapshot as write_command_snapshot
 from .user_info import ensure_table as ensure_user_table
 from .group_info import ensure_table as ensure_group_table
 from .supervisor import DaemonSupervisor
@@ -26,6 +27,11 @@ class _Runtime:
 
     async def start(self) -> None:
         base = QQBotUIDConfig.from_config()
+        if not base.daemon_mode and maintenance_rule() is not None:
+            logger.warning(
+                "[QQBotUID] 断连维护提示已开启，但『启用独立进程』没开："
+                "要让它生效请打开『独立进程模式』里的『启用独立进程』并重启核心。"
+            )
         await ensure_group_table()
         await ensure_user_table()
         if base.daemon_mode:
@@ -82,9 +88,12 @@ async def _stop_previous() -> None:
 @on_core_start(priority=20)
 async def start_qqbotuid() -> None:
     await _stop_previous()
+    write_command_snapshot()
+    refresh_plugin_options()
     await qqbotuid_runtime.start()
 
 
 @on_core_shutdown(priority=20)
 async def stop_qqbotuid() -> None:
     await qqbotuid_runtime.stop()
+    write_command_snapshot()

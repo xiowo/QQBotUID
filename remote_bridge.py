@@ -22,6 +22,16 @@ class RemoteBridge:
         self._reader: Optional[asyncio.Task[None]] = None
         self._targets: Dict[str, CoreTarget] = {}
         self._closed = False
+        self._disconnects = 0
+
+    @property
+    def connected(self) -> bool:
+        return self._ws is not None
+
+    def maintenance_active(self, threshold: int = 1) -> bool:
+        if self._closed or self._ws is not None:
+            return False
+        return self._disconnects >= max(int(threshold), 1)
 
     async def attach(self) -> None:
         """起后台任务维持连接，不阻塞启动。"""
@@ -66,6 +76,7 @@ class RemoteBridge:
             try:
                 async with websockets.connect(self.url, max_size=MAX_FRAME_BYTES) as ws:
                     self._ws = ws
+                    self._disconnects = 0
                     delay = RECONNECT_MIN
                     logger.success(f"[QQBotUID] 已连上核心: {self.url}")
                     async for raw in ws:
@@ -76,6 +87,8 @@ class RemoteBridge:
                 logger.warning(f"[QQBotUID] 核心连接断开，{delay:.0f}s 后重试: {e}")
             finally:
                 self._ws = None
+                if not self._closed:
+                    self._disconnects += 1
             if self._closed:
                 return
             await asyncio.sleep(delay)

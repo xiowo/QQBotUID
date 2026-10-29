@@ -1,4 +1,4 @@
-from typing import Any, Literal, Optional
+from typing import Any, List, Literal, Optional
 from dataclasses import dataclass
 
 from gsuid_core.data_store import get_res_path
@@ -8,9 +8,11 @@ from gsuid_core.utils.plugins_config.models import (
     GsIntConfig,
     GsStrConfig,
     GsBoolConfig,
+    GsListStrConfig,
 )
 from gsuid_core.utils.plugins_config.gs_config import StringConfig
 
+from .commands import installed_plugins, is_plugin_command
 from .bots_store import load_rows, set_bot_name
 
 PLATFORM_BOT_ID = "qqgroup"
@@ -90,6 +92,10 @@ CONFIG_DEFAULT: dict[str, GSC] = {
 }
 
 
+DEFAULT_MAINTENANCE_MESSAGE = "机器人维护中~\n正在更新框架(꒪⌓꒪)"
+MAINTENANCE_COUNT_DEFAULT = 3
+
+
 ADVANCED_CONFIG_DEFAULT: dict[str, GSC] = {
     "_DividerApi": GsDivider("接口地址", ""),
     "api_base": GsStrConfig(
@@ -126,6 +132,43 @@ ADVANCED_CONFIG_DEFAULT: dict[str, GSC] = {
         data=1010,
         max_value=60000,
     ),
+    "_DividerMaintenance": GsDivider("维护提示", ""),
+    "disconnect_reply_enabled": GsBoolConfig(
+        title="启用断连维护提示",
+        desc=(
+            "【必须先打开上面〔独立进程模式〕里的『启用独立进程』，否则不会生效】"
+            "开了独立进程之后：核心重启 / 重载插件导致断开，用户发命令时由 daemon 直接回下面这条提示，"
+        ),
+        data=False,
+    ),
+    "disconnect_reply_count": GsIntConfig(
+        title="断连次数",
+        desc="连续这么多次没连上核心才判定为断连、开始回提示；填 1 表示一断开就提示。",
+        data=3,
+        max_value=100,
+    ),
+    "disconnect_reply_plugins": GsListStrConfig(
+        title="触发的插件",
+        desc=(
+            "从已安装的插件里多选；只有这些插件下的命令才回提示。"
+            "留空表示任何消息都回提示。装了新插件要重启核心才会出现在列表里。"
+        ),
+        data=[],
+        options=installed_plugins(),
+    ),
+    "master_only_enabled": GsBoolConfig(
+        title="启用主人维护",
+        desc=(
+            "开启后只有主人（核心配置里的 masters）的消息会转给核心，"
+            "其他人一律回下面的『提示内容』。不看核心连接状态，同进程 / 独立进程都生效。"
+        ),
+        data=False,
+    ),
+    "disconnect_reply_message": GsStrConfig(
+        title="提示内容",
+        desc="断连维护和主人维护共用这条文案，留空用默认文案。",
+        data=DEFAULT_MAINTENANCE_MESSAGE,
+    ),
 }
 
 
@@ -147,6 +190,14 @@ def _cfg_int(config: StringConfig, name: str, default: int) -> int:
         return default
 
 
+def _cfg_list(config: StringConfig, name: str) -> List[str]:
+    """字符串列表配置。"""
+    data = config.get_config(name).data
+    if not isinstance(data, list):
+        return []
+    return [str(item).strip() for item in data if str(item).strip()]
+
+
 def group_name_enabled() -> bool:
     return bool(qqbotuid_config.get_config("group_name_enabled").data)
 
@@ -157,6 +208,73 @@ PROACTIVE_DEFAULT_MS = {"direct": 110, "group": 1010}
 def proactive_interval_ms(scene: str) -> int:
     key = f"proactive_{scene}_interval"
     return max(_cfg_int(advanced_config, key, PROACTIVE_DEFAULT_MS.get(scene, 0)), 0)
+
+
+def maintenance_message() -> str:
+    """维护提示文案（断连维护和主人维护共用）。"""
+    return _cfg_str(advanced_config, "disconnect_reply_message", DEFAULT_MAINTENANCE_MESSAGE)
+
+
+def master_only_enabled() -> bool:
+    return bool(advanced_config.get_config("master_only_enabled").data)
+
+
+def master_ids() -> set[str]:
+    """核心配置里的主人名单"""
+    from gsuid_core.config import core_config
+
+    masters = core_config.get_config("masters") or []
+    return {str(item).strip() for item in masters if str(item).strip()}
+
+
+def is_master(user_id: str) -> bool:
+    """是否机器人主人。"""
+    uid = str(user_id or "").strip()
+    if not uid:
+        return False
+    masters = master_ids()
+    if uid in masters:
+        return True
+    return any(item.rsplit(":", 1)[-1] == uid for item in masters if ":" in item)
+
+
+@dataclass(slots=True)
+class MaintenanceRule:
+    """核心断连时的兜底回复规则。"""
+
+    threshold: int
+    plugins: tuple[str, ...]
+    message: str
+
+    def matches(self, text: str) -> bool:
+        """消息属于配置的插件就命中；没配插件就一律回提示。"""
+        if not self.plugins:
+            return True
+        return is_plugin_command(text, self.plugins)
+
+
+def refresh_plugin_options() -> None:
+    options = installed_plugins()
+    changed = False
+    default = ADVANCED_CONFIG_DEFAULT.get("disconnect_reply_plugins")
+    current = advanced_config.get_config("disconnect_reply_plugins")
+    for item in (default, current):
+        if isinstance(item, GsListStrConfig) and item.options != options:
+            item.options = options
+            changed = True
+    if changed:
+        advanced_config.write_config()
+
+
+def maintenance_rule() -> Optional[MaintenanceRule]:
+    """读高级配置里的断连维护提示；没开启返回 ``None``。"""
+    if not bool(advanced_config.get_config("disconnect_reply_enabled").data):
+        return None
+    return MaintenanceRule(
+        threshold=max(_cfg_int(advanced_config, "disconnect_reply_count", MAINTENANCE_COUNT_DEFAULT), 1),
+        plugins=tuple(_cfg_list(advanced_config, "disconnect_reply_plugins")),
+        message=maintenance_message(),
+    )
 
 
 def _normalize_mode(mode: Any) -> Literal["ws", "wh"]:
