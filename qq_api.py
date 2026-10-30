@@ -495,6 +495,20 @@ class QQSender:
         status, data = await _post_json(self.tm, endpoint, payload)
         return 200 <= status < 300, data
 
+    async def reply_interaction(self, interaction_id: str, code: int = 0) -> bool:
+        """回应按钮回调"""
+        if not interaction_id:
+            return False
+        client = await self.tm.client()
+        endpoint = f"/interactions/{interaction_id}"
+        resp = await client.put(
+            endpoint,
+            json={"code": code},
+            headers={"Authorization": await self.tm.authorization()},
+        )
+        logger.debug(f"[QQBotUID] PUT {endpoint} -> {resp.status_code} {brief_text(resp.text)}")
+        return 200 <= resp.status_code < 300
+
     async def delete(self, endpoint: str) -> bool:
         client = await self.tm.client()
         logger.debug(f"[QQBotUID] DELETE {endpoint}")

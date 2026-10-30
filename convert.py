@@ -37,6 +37,9 @@ DIRECT_EVENTS = {"C2C_MESSAGE_CREATE", "DIRECT_MESSAGE_CREATE"}
 CHANNEL_EVENTS = {"AT_MESSAGE_CREATE", "MESSAGE_CREATE"}
 LIFECYCLE_EVENTS = {"GROUP_MEMBER_ADD", "GROUP_MEMBER_REMOVE", "GROUP_ADD_ROBOT", "GROUP_DEL_ROBOT"}
 FORWARD_KINDS = {"node", "nodes", "forward", "forward_msg", "forward_message"}
+INTERACTION_EVENT = "INTERACTION_CREATE"
+INTERACTION_ACK_TYPES = (11, 12)
+EVENT_REPLY_PREFIX = "event_"
 
 
 def _strip_attachment_markers(value: str) -> str:
@@ -485,6 +488,82 @@ def _meta_message(
     return None
 
 
+def event_reply_id(msg_id: str) -> str:
+    """事件被动回复的 event_id；普通消息返回空串。"""
+    key = str(msg_id or "")
+    return key[len(EVENT_REPLY_PREFIX) :] if key.startswith(EVENT_REPLY_PREFIX) else ""
+
+
+def event_msg_id(event_id: str) -> str:
+    """把事件 id 包成内部 msg_id，发送时还原成 event_id 字段。"""
+    return f"{EVENT_REPLY_PREFIX}{event_id}" if event_id else ""
+
+
+def interaction_ack_id(payload: Dict[str, Any]) -> str:
+    """按钮回调要回应的 interaction_id。"""
+    if str(payload.get("t") or "") != INTERACTION_EVENT:
+        return ""
+    d = payload.get("d")
+    if not isinstance(d, dict):
+        return ""
+    try:
+        kind = int(d.get("type") or 0)
+    except (TypeError, ValueError):
+        return ""
+    if kind not in INTERACTION_ACK_TYPES:
+        return ""
+    return str(d.get("id") or payload.get("id") or "")
+
+
+def _interaction_to_receive(
+    payload: Dict[str, Any],
+    bot_id: str,
+    bot_self_id: str,
+    appid: str,
+    group_name: str = "",
+    nickname: str = "",
+) -> Optional[MessageReceive]:
+    """按钮点击 → 一条普通文本消息，交给核心按命令处理"""
+    d = payload.get("d")
+    if not isinstance(d, dict):
+        return None
+    raw_data = d.get("data")
+    data = raw_data if isinstance(raw_data, dict) else {}
+    raw_resolved = data.get("resolved")
+    resolved = raw_resolved if isinstance(raw_resolved, dict) else {}
+    text = _strip_leading_command(str(resolved.get("button_data") or "").strip())
+    if not text:
+        return None
+
+    scene = str(d.get("scene") or "")
+    target_id: Optional[str]
+    if scene == "group":
+        user_type = "group"
+        target_id = str(d.get("group_openid") or "")
+        user_id = str(d.get("group_member_openid") or resolved.get("user_id") or "")
+    elif scene == "c2c":
+        user_type = "direct"
+        target_id = None
+        user_id = str(d.get("user_openid") or resolved.get("user_id") or "")
+    elif scene == "guild":
+        user_type = "channel"
+        target_id = str(d.get("channel_id") or "")
+        user_id = str(resolved.get("user_id") or "")
+    else:
+        return None
+
+    return MessageReceive(
+        bot_id=bot_id,
+        bot_self_id=bot_self_id,
+        msg_id=event_msg_id(str(payload.get("id") or d.get("id") or "")),
+        user_type=user_type,  # type: ignore[arg-type]
+        group_id=target_id,
+        user_id=user_id,
+        sender=_sender(d, user_id, target_id, appid, group_name, nickname),
+        content=[Message(type="text", data=text)],
+    )
+
+
 def event_to_receive(
     payload: Dict[str, Any],
     bot_id: str,
@@ -497,6 +576,9 @@ def event_to_receive(
     d = payload.get("d") or {}
     if not isinstance(d, dict):
         return None
+
+    if event_type == INTERACTION_EVENT:
+        return _interaction_to_receive(payload, bot_id, bot_self_id, appid, group_name, nickname)
 
     if event_type in GROUP_EVENTS or event_type in LIFECYCLE_EVENTS:
         user_type = "group"
@@ -675,6 +757,8 @@ def normalize_button(button: Any) -> Optional[Dict[str, Any]]:
             "specify_role_ids",
             "specify_user_ids",
             "unsupport_tips",
+            "enter",
+            "reply",
         )
         attrs = {name: getattr(button, name, None) for name in names}
         if not any(value is not None for value in attrs.values()):
@@ -700,6 +784,9 @@ def normalize_button(button: Any) -> Optional[Dict[str, Any]]:
         "data": data,
         "tips": str(button.get("unsupport_tips") or "您的客户端暂不支持该功能, 请升级后适配..."),
     }
+    for name in ("enter", "reply"):
+        if button.get(name):
+            normalized[name] = True
 
     permission_type = button.get("permisson")
     if permission_type is not None:
@@ -723,6 +810,18 @@ def build_keyboard(rows: List[List[Dict[str, Any]]]) -> Dict[str, Any]:
         built_buttons: List[Dict[str, Any]] = []
         for button in row:
             label = str(button.get("text") or "")
+            action: Dict[str, Any] = {
+                "type": button.get("type", 2),
+                "data": str(button.get("data") or label),
+                "permission": button.get("permission") or {"type": 2},
+                "unsupport_tips": button.get("tips") or "您的客户端暂不支持该功能, 请升级后适配...",
+            }
+            # enter / reply 只对指令按钮有效
+            if action["type"] == 2:
+                if button.get("enter"):
+                    action["enter"] = True
+                if button.get("reply"):
+                    action["reply"] = True
             built_buttons.append(
                 {
                     "id": str(index),
@@ -731,12 +830,7 @@ def build_keyboard(rows: List[List[Dict[str, Any]]]) -> Dict[str, Any]:
                         "visited_label": str(button.get("show") or label),
                         "style": button.get("style", 1),
                     },
-                    "action": {
-                        "type": button.get("type", 2),
-                        "data": str(button.get("data") or label),
-                        "permission": button.get("permission") or {"type": 2},
-                        "unsupport_tips": button.get("tips") or "您的客户端暂不支持该功能, 请升级后适配...",
-                    },
+                    "action": action,
                 }
             )
             index += 1

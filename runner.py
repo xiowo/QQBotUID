@@ -47,8 +47,10 @@ from .convert import (
     send_endpoint,
     build_keyboard,
     is_bot_message,
+    interaction_ack_id,
     recall_endpoint,
     event_to_receive,
+    event_reply_id,
     fallback_nickname,
     normalize_buttons,
     is_reference_message,
@@ -462,6 +464,7 @@ class QQBotUID:
         if event_type == "RESUMED":
             logger.success(t("[QQBotUID] QQ官方WS会话已恢复"))
             return
+        await self.ack_interaction(payload)
         receive = event_to_receive(
             payload,
             self.config.platform_bot_id,
@@ -483,6 +486,19 @@ class QQBotUID:
             if await self.maintenance_reply(receive):
                 return
             await self.bridge.push(receive)
+
+    async def ack_interaction(self, payload: Dict[str, Any]) -> None:
+        """按钮回调立刻回应"""
+        interaction_id = interaction_ack_id(payload)
+        if not interaction_id:
+            return
+        try:
+            ok = await self.sender.reply_interaction(interaction_id)
+        except Exception as error:
+            logger.warning(t("[QQBotUID] 按钮回调回应失败: {error}", error=error))
+            return
+        if not ok:
+            logger.debug(t("[QQBotUID] 按钮回调回应未成功: {id}", id=interaction_id))
 
     def _skip_other_bot(self, payload: Dict[str, Any]) -> bool:
         """开了「忽略其他机器人消息」时，别的 bot 发的消息不进核心。"""
@@ -570,6 +586,7 @@ class QQBotUID:
             if resp is None:
                 return web.json_response({"error": "invalid validation"}, status=400)
             return web.json_response(resp)
+        await self.ack_interaction(body)
         receive = event_to_receive(
             body,
             self.config.platform_bot_id,
@@ -588,7 +605,7 @@ class QQBotUID:
                 if not await self.maintenance_reply(receive):
                     await self.bridge.push(receive)
         if body.get("t") == "INTERACTION_CREATE":
-            return web.json_response({"op": OP_CALLBACK_ACK, "code": 0})
+            return web.json_response({"op": OP_CALLBACK_ACK, "d": {}})
         return web.json_response({})
 
     async def send_recall_ack(self, send: MessageSend, message_id: Optional[Union[str, List[str]]]) -> None:
@@ -805,7 +822,10 @@ class QQBotUID:
         use_md = markdown is not None or _platform_selected("SendMDPlatform", platform)
 
         payload: Dict[str, Any] = {"msg_seq": _msg_seq()}
-        if msg_id:
+        event_id = event_reply_id(msg_id)
+        if event_id:
+            payload["event_id"] = event_id
+        elif msg_id:
             payload["msg_id"] = msg_id
         reply_id = next((m for m in send.content if m.type == "reply_id" and m.data), None)
         if reply_id is not None:
