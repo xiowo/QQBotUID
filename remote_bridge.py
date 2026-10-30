@@ -20,6 +20,8 @@ class RemoteBridge:
         self.url = url
         self._ws: Optional[Any] = None
         self._reader: Optional[asyncio.Task[None]] = None
+        self._worker: Optional[asyncio.Task[None]] = None
+        self._queue: asyncio.Queue = asyncio.Queue()
         self._targets: Dict[str, CoreTarget] = {}
         self._closed = False
         self._disconnects = 0
@@ -31,6 +33,10 @@ class RemoteBridge:
 
     async def attach(self) -> None:
         """起后台任务维持连接，不阻塞启动。"""
+        if self._worker is None or self._worker.done():
+            self._worker = asyncio.create_task(
+                self._drain_forever(), name="QQBotUID.remote-dispatch"
+            )
         if self._reader is not None and not self._reader.done():
             return
         self._closed = False
@@ -64,6 +70,13 @@ class RemoteBridge:
                 await reader
             except asyncio.CancelledError:
                 pass
+        worker, self._worker = self._worker, None
+        if worker is not None:
+            worker.cancel()
+            try:
+                await worker
+            except asyncio.CancelledError:
+                pass
         self._targets.clear()
 
     async def _forever(self) -> None:
@@ -76,7 +89,7 @@ class RemoteBridge:
                     delay = RECONNECT_MIN
                     logger.success(f"[QQBotUID] 已连上核心: {self.url}")
                     async for raw in ws:
-                        await self._dispatch(raw)
+                        self._queue.put_nowait(raw)
             except asyncio.CancelledError:
                 raise
             except Exception as e:
@@ -89,6 +102,18 @@ class RemoteBridge:
                 return
             await asyncio.sleep(delay)
             delay = min(delay * 2, RECONNECT_MAX)
+
+    async def _drain_forever(self) -> None:
+        while True:
+            raw = await self._queue.get()
+            try:
+                await self._dispatch(raw)
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                logger.warning(f"[QQBotUID] 下发帧处理异常，已跳过: {e}")
+            finally:
+                self._queue.task_done()
 
     async def _dispatch(self, raw: Any) -> None:
         body = raw.encode() if isinstance(raw, str) else raw
