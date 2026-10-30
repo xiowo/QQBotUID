@@ -59,6 +59,16 @@ def _clean_text(content: Any) -> str:
     return html.unescape(text).strip()
 
 
+def card_segment(d: Dict[str, Any]) -> Optional[Message]:
+    ark = d.get("ark_data")
+    if not isinstance(ark, dict):
+        return None
+    raw_fields = ark.get("fields")
+    if not isinstance(raw_fields, dict) or not raw_fields:
+        return None
+    return Message(type="card", data={"type": str(ark.get("ark_type") or "tuwen"), "content": raw_fields})
+
+
 def _extract_inline_attachment_images(text: Any) -> Tuple[str, List[str]]:
     if not text:
         return "", []
@@ -627,8 +637,13 @@ def event_to_receive(
     node_items = _extract_node_items(elements)
 
     raw_text = d.get("content")
-    text, inline_image_urls = _extract_inline_attachment_images(raw_text)
-    text_node_items = _extract_associated_node_items(raw_text)
+    card = card_segment(d)
+    if card is not None:
+        content.append(card)
+        text, inline_image_urls, text_node_items = "", [], []
+    else:
+        text, inline_image_urls = _extract_inline_attachment_images(raw_text)
+        text_node_items = _extract_associated_node_items(raw_text)
 
     if text_node_items:
         content.append(Message(type="node", data=text_node_items))
