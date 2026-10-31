@@ -76,6 +76,8 @@ OP_CALLBACK_VALIDATION = 13
 INTENTS = (1 << 0) | (1 << 10) | (1 << 12) | (1 << 24) | (1 << 25) | (1 << 26) | (1 << 27) | (1 << 30)
 UA_PLUGIN_TAG = "QQBotPlugin/1.7.2"
 CLIENT_VERSION = "9.9.9"
+# 主动消息错误码以这个前缀放在回执 id 位
+SEND_ERROR_PREFIX = "__send_error__:"
 
 
 def _read_version() -> str:
@@ -729,7 +731,9 @@ class QQBotUID:
         """主动消息"""
         message_id: Optional[str] = None
         try:
-            message_id = await self.post_message(send, endpoint, "")
+            message_id, error = await self.post_message_detail(send, endpoint, "")
+            if message_id is None and error:
+                message_id = f"{SEND_ERROR_PREFIX}{error}"
         finally:
             await self.send_recall_ack(send, message_id)
 
