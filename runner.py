@@ -1,6 +1,7 @@
 import re
 import json
 import time
+import uuid
 import random
 import asyncio
 import tomllib
@@ -21,13 +22,18 @@ from .sign import verify_and_respond
 from .config import (
     QQBotUIDConfig,
     is_master,
+    stream_setting,
     update_bot_name,
     maintenance_rule,
     group_name_enabled,
     maintenance_message,
     master_only_enabled,
+    input_notify_seconds,
 )
 from .qq_api import (
+    FILE_TYPE_AUDIO,
+    FILE_TYPE_VIDEO,
+    SHARE_CALLBACK_LIMIT,
     QQSender,
     MaterialImage,
     QQMateriaHost,
@@ -41,18 +47,18 @@ from .qq_api import (
     patch_image_fallback,
     cancel_group_refreshes,
 )
-from .ws_api import ACTIVE_TEST, handle_control
+from .ws_api import ACTIVE_TEST, ADMIN_REQUEST, SHARE_LINK_REQUEST, handle_control
 from .convert import (
     at_tag,
     send_endpoint,
     build_keyboard,
+    event_reply_id,
     is_bot_message,
-    interaction_ack_id,
     recall_endpoint,
     event_to_receive,
-    event_reply_id,
     fallback_nickname,
     normalize_buttons,
+    interaction_ack_id,
     is_reference_message,
     messages_to_plain_text,
 )
@@ -73,7 +79,8 @@ OP_HELLO = 10
 OP_CALLBACK_ACK = 12
 OP_CALLBACK_VALIDATION = 13
 
-INTENTS = (1 << 0) | (1 << 10) | (1 << 12) | (1 << 24) | (1 << 25) | (1 << 26) | (1 << 27) | (1 << 30)
+# 1<<0 频道 / 1<<10 频道表情表态 / 1<<24 群成员 / 1<<25 群@与单聊 / 1<<26 按钮回调 / 1<<30 公域频道消息
+INTENTS = (1 << 0) | (1 << 10) | (1 << 24) | (1 << 25) | (1 << 26) | (1 << 30)
 UA_PLUGIN_TAG = "QQBotPlugin/1.7.2"
 CLIENT_VERSION = "9.9.9"
 # 主动消息错误码以这个前缀放在回执 id 位
@@ -129,6 +136,17 @@ def _qq_error_text(data: Any) -> str:
     return brief_text(data, 200) or "平台拒绝发送"
 
 
+def _warn_no_target(send: MessageSend) -> None:
+    """发送目标推断不出来时统一告警"""
+    logger.warning(
+        t(
+            "[QQBotUID] 无法推断发送目标: {target_type}/{target_id}",
+            target_type=send.target_type,
+            target_id=send.target_id,
+        )
+    )
+
+
 def _alt_size(alt: str) -> Optional[Tuple[int, int]]:
     found = _MD_SIZE_PATTERN.search(alt)
     if found is None:
@@ -144,6 +162,23 @@ def _with_size(alt: str, size: Optional[Tuple[int, int]]) -> str:
 
 
 _PLAIN_LABELS = {"record": "[语音]", "video": "[视频]", "file": "[文件]"}
+# 富媒体段 → 上传时的 file_type
+_MEDIA_FILE_TYPES = {"record": FILE_TYPE_AUDIO, "video": FILE_TYPE_VIDEO}
+# 这些走流式
+_STREAMABLE_TYPES = {"text", "markdown", "at"}
+
+
+def _pick_media(items: List[Message]) -> Tuple[Optional[Message], int]:
+    """挑出第一条要单独发的富媒体段；file_type 为 0 表示走文件上传。"""
+    for item in items:
+        if not isinstance(item.data, str) or not item.data:
+            continue
+        if item.type == "file":
+            return item, 0
+        file_type = _MEDIA_FILE_TYPES.get(str(item.type))
+        if file_type is not None:
+            return item, file_type
+    return None, 0
 
 
 def _size_after(items: List[Message], index: int) -> Optional[Tuple[int, int]]:
@@ -203,6 +238,12 @@ def _iter_md_images(content: str) -> List[Tuple[int, int, int]]:
 
 _MD_AT_PATTERN = re.compile(r"<@!?[A-Za-z0-9_\-]+>")
 _AT_TAG_PATTERN = re.compile(r'<@!?[A-Za-z0-9_\-]+>|<qqbot-at-user id="[^"]*"\s*/>|<qqbot-at-everyone />')
+_MD_SOFT_BREAK = re.compile(r"(?<!\n)\n(?!\n)")
+_MD_IMAGE_PATTERN = re.compile(r"!\[[^\]]*\]\([^)]+\)")
+
+
+def _md_hard_break(content: str) -> str:
+    return _MD_SOFT_BREAK.sub("  \n", content)
 
 
 def _msg_seq() -> int:
@@ -253,6 +294,15 @@ def _md_text(item: Message) -> str:
     return _MD_AT_PATTERN.sub("", content)
 
 
+def _has_image(send: MessageSend) -> bool:
+    for item in send.content or []:
+        if item.type == "image":
+            return True
+        if item.type in {"markdown", "text"} and _MD_IMAGE_PATTERN.search(_md_text(item)):
+            return True
+    return False
+
+
 def _markdown_body(markdown: Optional[Message]) -> Dict[str, Any]:
     if markdown is not None and isinstance(markdown.data, dict):
         return dict(markdown.data)
@@ -263,6 +313,180 @@ def _user_agent(client_name: str) -> str:
     runtime = f"Python/{platform.python_version()}; {platform.system().lower()}"
     name = client_name.strip() or "QQBotUID"
     return f"{UA_PLUGIN_TAG} ({runtime}; {name}/{CLIENT_VERSION})"
+
+
+def _admin_str(data: Dict[str, Any], *keys: str) -> str:
+    """按顺序取第一个非空字符串字段。"""
+    for key in keys:
+        value = str(data.get(key) or "").strip()
+        if value:
+            return value
+    return ""
+
+
+def _admin_list(data: Dict[str, Any], *keys: str) -> List[str]:
+    """取 openid 列表，单个字符串也当一项。"""
+    for key in keys:
+        raw = data.get(key)
+        if isinstance(raw, str):
+            raw = [raw]
+        if not isinstance(raw, list):
+            continue
+        items = [str(item).strip() for item in raw if str(item).strip()]
+        if items:
+            return items
+    return []
+
+
+async def _admin_kick(bot: "QQBotUID", data: Dict[str, Any]) -> Dict[str, Any]:
+    group_id = _admin_str(data, "group_openid", "group_id")
+    openids = _admin_list(data, "member_openids", "member_openid")
+    if not group_id or not openids:
+        return {"ok": False, "error": "缺少 group_openid 或 member_openids"}
+    ok = await bot.sender.kick_group_members(group_id, openids, bool(data.get("add_to_blacklist")))
+    return {"ok": ok}
+
+
+async def _admin_mute(bot: "QQBotUID", data: Dict[str, Any]) -> Dict[str, Any]:
+    group_id = _admin_str(data, "group_openid", "group_id")
+    openid = _admin_str(data, "member_openid", "user_id")
+    seconds = _duration_seconds(data.get("seconds", data.get("duration")))
+    if not group_id or not openid or seconds is None:
+        return {"ok": False, "error": "缺少 group_openid / member_openid / seconds"}
+    ok = await bot.sender.set_group_member_mute(group_id, openid, seconds)
+    return {"ok": ok}
+
+
+async def _admin_mute_state(bot: "QQBotUID", data: Dict[str, Any]) -> Dict[str, Any]:
+    group_id = _admin_str(data, "group_openid", "group_id")
+    if not group_id:
+        return {"ok": False, "error": "缺少 group_openid"}
+    return {"ok": True, "data": await bot.sender.get_group_mute_state(group_id)}
+
+
+async def _admin_bot_state(bot: "QQBotUID", data: Dict[str, Any]) -> Dict[str, Any]:
+    group_id = _admin_str(data, "group_openid", "group_id")
+    if not group_id:
+        return {"ok": False, "error": "缺少 group_openid"}
+    return {"ok": True, "data": await bot.sender.get_group_bot_state(group_id)}
+
+
+async def _admin_group_list(bot: "QQBotUID", data: Dict[str, Any]) -> Dict[str, Any]:
+    return {"ok": True, "data": await bot.sender.get_group_list()}
+
+
+async def _admin_join_requests(bot: "QQBotUID", data: Dict[str, Any]) -> Dict[str, Any]:
+    group_id = _admin_str(data, "group_openid", "group_id")
+    if not group_id:
+        return {"ok": False, "error": "缺少 group_openid"}
+    return {"ok": True, "data": await bot.sender.list_join_requests(group_id)}
+
+
+async def _admin_approve(bot: "QQBotUID", data: Dict[str, Any]) -> Dict[str, Any]:
+    group_id = _admin_str(data, "group_openid", "group_id")
+    openid = _admin_str(data, "member_openid", "user_id")
+    if not group_id or not openid:
+        return {"ok": False, "error": "缺少 group_openid 或 member_openid"}
+    ok = await bot.sender.approve_join_request(group_id, openid, _admin_str(data, "join_request_id"))
+    return {"ok": ok}
+
+
+async def _admin_decline(bot: "QQBotUID", data: Dict[str, Any]) -> Dict[str, Any]:
+    group_id = _admin_str(data, "group_openid", "group_id")
+    openid = _admin_str(data, "member_openid", "user_id")
+    if not group_id or not openid:
+        return {"ok": False, "error": "缺少 group_openid 或 member_openid"}
+    ok = await bot.sender.decline_join_request(
+        group_id,
+        openid,
+        _admin_str(data, "join_request_id"),
+        _admin_str(data, "reason", "reject_reason"),
+        bool(data.get("add_to_blacklist")),
+    )
+    return {"ok": ok}
+
+
+async def _admin_blacklist(bot: "QQBotUID", data: Dict[str, Any]) -> Dict[str, Any]:
+    group_id = _admin_str(data, "group_openid", "group_id")
+    if not group_id:
+        return {"ok": False, "error": "缺少 group_openid"}
+    return {"ok": True, "data": await bot.sender.get_member_blacklist(group_id)}
+
+
+async def _admin_blacklist_change(bot: "QQBotUID", data: Dict[str, Any], op: str) -> Dict[str, Any]:
+    group_id = _admin_str(data, "group_openid", "group_id")
+    openids = _admin_list(data, "member_openids", "member_openid")
+    if not group_id or not openids:
+        return {"ok": False, "error": "缺少 group_openid 或 member_openids"}
+    ok = await bot.sender.change_member_blacklist(group_id, op, openids)
+    return {"ok": ok}
+
+
+async def _admin_blacklist_add(bot: "QQBotUID", data: Dict[str, Any]) -> Dict[str, Any]:
+    return await _admin_blacklist_change(bot, data, "add")
+
+
+async def _admin_blacklist_del(bot: "QQBotUID", data: Dict[str, Any]) -> Dict[str, Any]:
+    return await _admin_blacklist_change(bot, data, "del")
+
+
+async def _admin_menu_get(bot: "QQBotUID", data: Dict[str, Any]) -> Dict[str, Any]:
+    return {"ok": True, "data": await bot.sender.get_menu()}
+
+
+async def _admin_menu_set(bot: "QQBotUID", data: Dict[str, Any]) -> Dict[str, Any]:
+    menu = data.get("menu")
+    if not isinstance(menu, dict) or not menu:
+        return {"ok": False, "error": "menu 必须是非空 dict"}
+    return {"ok": await bot.sender.change_menu(menu)}
+
+
+async def _admin_panel_list(bot: "QQBotUID", data: Dict[str, Any]) -> Dict[str, Any]:
+    scope = _admin_str(data, "scope") or "group"
+    return {"ok": True, "data": await bot.sender.list_panels(scope)}
+
+
+async def _admin_panel_create(bot: "QQBotUID", data: Dict[str, Any]) -> Dict[str, Any]:
+    panel = data.get("panel")
+    if not isinstance(panel, dict) or not panel:
+        return {"ok": False, "error": "panel 必须是非空 dict"}
+    scope = _admin_str(data, "scope") or "group"
+    target_type = _admin_str(data, "target_type") or "all"
+    result = await bot.sender.create_panel(
+        scope,
+        target_type,
+        panel,
+        _admin_list(data, "user_openids"),
+        _admin_list(data, "group_openids"),
+    )
+    return {"ok": bool(result), "data": result}
+
+
+async def _admin_panel_delete(bot: "QQBotUID", data: Dict[str, Any]) -> Dict[str, Any]:
+    panel_id = _admin_str(data, "panel_id")
+    if not panel_id:
+        return {"ok": False, "error": "缺少 panel_id"}
+    return {"ok": await bot.sender.delete_panel(panel_id)}
+
+
+_ADMIN_ACTIONS = {
+    "kick": _admin_kick,
+    "mute": _admin_mute,
+    "mute_state": _admin_mute_state,
+    "bot_state": _admin_bot_state,
+    "group_list": _admin_group_list,
+    "join_requests": _admin_join_requests,
+    "approve": _admin_approve,
+    "decline": _admin_decline,
+    "blacklist": _admin_blacklist,
+    "blacklist_add": _admin_blacklist_add,
+    "blacklist_del": _admin_blacklist_del,
+    "menu_get": _admin_menu_get,
+    "menu_set": _admin_menu_set,
+    "panel_list": _admin_panel_list,
+    "panel_create": _admin_panel_create,
+    "panel_delete": _admin_panel_delete,
+}
 
 
 class _Deferred:
@@ -485,9 +709,19 @@ class QQBotUID:
             self._warn_unresolved_reference(payload, receive)
             self.passive.mark(receive.msg_id)
             self.users.observe(receive)
+            await self.maybe_input_notify(receive)
             if await self.maintenance_reply(receive):
                 return
             await self.bridge.push(receive)
+
+    async def maybe_input_notify(self, receive: MessageReceive) -> None:
+        """私聊先发「正在输入」；剩最后一次被动额度时不发，留给真回复。"""
+        seconds = input_notify_seconds()
+        if not seconds or receive.user_type != "direct" or not receive.user_id:
+            return
+        if self.passive.remaining(receive.msg_id) <= 1 or not self.passive.take(receive.msg_id):
+            return
+        await self.sender.send_input_notify(receive.user_id, seconds, receive.msg_id)
 
     async def ack_interaction(self, payload: Dict[str, Any]) -> None:
         """按钮回调立刻回应"""
@@ -569,7 +803,7 @@ class QQBotUID:
         active = getattr(self.bridge, "maintenance_active", None)
         if not callable(active) or not active(rule.threshold):
             return ""
-        if not rule.matches(messages_to_plain_text(receive.content or [])):
+        if not rule.matches(messages_to_plain_text(receive.content or [], receive.user_type)):
             return ""
         return rule.message
 
@@ -604,6 +838,7 @@ class QQBotUID:
             if not self._skip_other_bot(body):
                 self.passive.mark(receive.msg_id)
                 self.users.observe(receive)
+                await self.maybe_input_notify(receive)
                 if not await self.maintenance_reply(receive):
                     await self.bridge.push(receive)
         if body.get("t") == "INTERACTION_CREATE":
@@ -664,6 +899,10 @@ class QQBotUID:
             return control
         if first.type == ACTIVE_TEST:
             return await self.active_test_reply(send, first.data)
+        if first.type == ADMIN_REQUEST:
+            return await self.admin_reply(first.data)
+        if first.type == SHARE_LINK_REQUEST:
+            return await self.share_link_reply(first.data)
         if first.type == "excute_delete_message" and isinstance(first.data, dict):
             mid = str(first.data.get("message_id") or "")
             endpoint = recall_endpoint(send, mid) if mid else None
@@ -677,19 +916,50 @@ class QQBotUID:
             return message_ids or _Deferred()
         endpoint = send_endpoint(send)
         if endpoint is None:
-            logger.warning(
-                t(
-                    "[QQBotUID] 无法推断发送目标: {target_type}/{target_id}",
-                    target_type=send.target_type,
-                    target_id=send.target_id,
-                )
-            )
+            _warn_no_target(send)
             return None
         if not self.passive.take(send.msg_id):
             self._log_passive_fallback(send)
             self.proactive.submit(send.target_type, lambda: self.send_proactive(send, endpoint))
             return _Deferred()
+        streamed = await self.try_stream(send, send.msg_id)
+        if streamed is not None:
+            return streamed
         return await self.post_message(send, endpoint, send.msg_id)
+
+    async def try_stream(self, send: MessageSend, msg_id: str) -> Optional[str]:
+        """私聊纯文本走流式；返回 message_id 表示已发出，``None`` 表示该回退普通发送。"""
+        setting = stream_setting()
+        if setting is None or send.target_type != "direct" or not send.target_id:
+            return None
+        if _has_image(send):
+            logger.debug("[QQBotUID] 回复里带图片，不走流式，直接普通发送")
+            return None
+        if any(str(item.type or "") not in _STREAMABLE_TYPES for item in send.content or []):
+            return None
+        content = await self._segments_markdown(send)
+        if not content.strip():
+            return None
+        if not any(item.type == "markdown" for item in send.content or []):
+            content = _md_hard_break(content)
+        chunk_size = setting.chunk_size
+        if chunk_size >= len(content):
+            chunk_size = max(1, (len(content) + 1) // 2)
+        event_id = event_reply_id(msg_id)
+        ok, stream_id = await self.sender.send_stream(
+            send.target_id,
+            content,
+            msg_id="" if event_id else msg_id,
+            event_id=event_id,
+            chunk_size=chunk_size,
+            delay_ms=setting.delay_ms,
+        )
+        if ok:
+            return stream_id or None
+        if stream_id:
+            return stream_id
+        logger.warning("[QQBotUID] 流式发送失败，回退普通消息")
+        return None
 
     def _log_passive_fallback(self, send: MessageSend) -> None:
         """被动额度用完（5 次）或已过期，改走主动通道。"""
@@ -727,6 +997,62 @@ class QQBotUID:
             ensure_ascii=False,
         )
 
+    async def share_link_reply(self, data: Any) -> str:
+        """核心通用协议 gscore_qqbot_share_link_request：生成机器人分享链接。"""
+        payload = data if isinstance(data, dict) else {}
+        request_id = str(payload.get("request_id") or "")
+        if not request_id:
+            return json.dumps({"ok": False, "error": "missing request_id"}, ensure_ascii=False)
+        callback = str(payload.get("callback_data") or "").strip()
+        if not callback:
+            callback = uuid.uuid4().hex
+        elif len(callback) > SHARE_CALLBACK_LIMIT:
+            return json.dumps(
+                {
+                    "request_id": request_id,
+                    "ok": False,
+                    "error": f"callback_data 最长 {SHARE_CALLBACK_LIMIT} 字符",
+                },
+                ensure_ascii=False,
+            )
+        url = await self.sender.generate_url_link(callback)
+        if not url:
+            return json.dumps(
+                {"request_id": request_id, "ok": False, "error": "生成分享链接失败"},
+                ensure_ascii=False,
+            )
+        return json.dumps(
+            {
+                "request_id": request_id,
+                "ok": True,
+                "data": {"url": url, "callback_data": callback},
+            },
+            ensure_ascii=False,
+        )
+
+    async def admin_reply(self, data: Any) -> str:
+        """核心通用协议 gscore_qqbot_admin_request：按 action 调群管 / 菜单接口。"""
+        payload = data if isinstance(data, dict) else {}
+        request_id = str(payload.get("request_id") or "")
+        action = str(payload.get("action") or "").strip().lower()
+        if not request_id:
+            return json.dumps({"ok": False, "error": "missing request_id"}, ensure_ascii=False)
+        handler = _ADMIN_ACTIONS.get(action)
+        if handler is None:
+            logger.warning(f"[QQBotUID] 未知的群管 action: {action or '-'}")
+            return json.dumps(
+                {"request_id": request_id, "action": action, "ok": False, "error": f"未知 action: {action or '-'}"},
+                ensure_ascii=False,
+            )
+        try:
+            body = await handler(self, payload)
+        except Exception as error:
+            logger.warning(f"[QQBotUID] 群管动作失败（{action}）: {error}")
+            body = {"ok": False, "error": str(error)}
+        result: Dict[str, Any] = {"request_id": request_id, "action": action}
+        result.update(body)
+        return json.dumps(result, ensure_ascii=False)
+
     async def send_proactive(self, send: MessageSend, endpoint: str) -> None:
         """主动消息"""
         message_id: Optional[str] = None
@@ -748,7 +1074,9 @@ class QQBotUID:
             markdown_body = payload.get("markdown")
             has_markdown = isinstance(markdown_body, dict) and bool(str(markdown_body.get("content") or "").strip())
             has_card = bool(payload.get("card"))
-            if not payload.get("content") and not has_markdown and not payload.get("media") and not has_card:
+            has_media = bool(payload.get("media"))
+            has_text = bool(payload.get("content"))
+            if not has_text and not has_markdown and not has_media and not has_card:
                 logger.warning(t("[QQBotUID] 没有可发送的内容，已跳过: {target_id}", target_id=send.target_id))
                 return None, "没有可发送的内容"
             ok, data = await self.sender.post_json(endpoint, payload)
@@ -762,7 +1090,11 @@ class QQBotUID:
                     )
                 )
                 return None, _qq_error_text(data)
-            return str(data.get("id") or data.get("msg_id") or data.get("message_id") or "") or None, ""
+            # 进审核的消息平台只回 audit_id，直接当 id 回传：撤回会失败，但不至于判成发送失败
+            message_id = str(
+                data.get("id") or data.get("msg_id") or data.get("message_id") or data.get("audit_id") or ""
+            )
+            return message_id or None, ""
         finally:
             self.material.schedule_cleanup()
 
@@ -772,13 +1104,7 @@ class QQBotUID:
         """node 降级多条消息发送"""
         endpoint = send_endpoint(send)
         if endpoint is None:
-            logger.warning(
-                t(
-                    "[QQBotUID] 无法推断发送目标: {target_type}/{target_id}",
-                    target_type=send.target_type,
-                    target_id=send.target_id,
-                )
-            )
+            _warn_no_target(send)
             return None
         message_ids: List[str] = []
         for item in normalize_node_items(items):
@@ -816,13 +1142,16 @@ class QQBotUID:
         assert send.content is not None
         platform = self.config.platform_bot_id
         use_buttons = _platform_selected("SendButtonsPlatform", platform)
+        if any(item.type == "template_markdown" for item in send.content):
+            logger.debug("[QQBotUID] 不支持 markdown 模板消息，该段已跳过")
 
-        markdown = next((m for m in send.content if m.type in {"markdown", "template_markdown"}), None)
+        markdown = next((m for m in send.content if m.type == "markdown"), None)
         image = next((m for m in send.content if m.type == "image" and isinstance(m.data, str)), None)
         buttons = next((m for m in send.content if m.type in {"buttons", "template_buttons"}), None)
         card = next((m for m in send.content if m.type == "card" and isinstance(m.data, dict)), None)
-        file_msg = next((m for m in send.content if m.type == "file" and isinstance(m.data, str) and m.data), None)
-        text = _strip_at(messages_to_plain_text(send.content), send.target_type or "")
+        media, media_type = _pick_media(send.content)
+        target_type = send.target_type or "direct"
+        text = _strip_at(messages_to_plain_text(send.content, target_type), target_type)
         use_md = markdown is not None or _platform_selected("SendMDPlatform", platform)
 
         payload: Dict[str, Any] = {"msg_seq": _msg_seq()}
@@ -839,20 +1168,29 @@ class QQBotUID:
             }
 
         if card is not None and isinstance(card.data, dict):
+            card_type = str(card.data.get("type") or "tuwen").strip().lower()
+            content = card.data.get("content")
+            if card_type == "ark" and isinstance(content, dict):
+                payload.update({"msg_type": 3, "ark": content})
+                return payload
             payload.update({"msg_type": 8, "card": card.data})
             return payload
 
-        if file_msg is not None and send.target_id:
-            file_info = await self.sender.upload_file(
-                send.target_type or "direct",
-                send.target_id,
-                str(file_msg.data),
-            )
+        if media is not None and send.target_id:
+            if media_type == FILE_TYPE_AUDIO or media_type == FILE_TYPE_VIDEO:
+                file_info = await self.sender.upload_media(
+                    target_type,
+                    send.target_id,
+                    str(media.data),
+                    media_type,
+                )
+            else:
+                file_info = await self.sender.upload_file(target_type, send.target_id, str(media.data))
             if file_info:
                 payload.update({"msg_type": 7, "media": {"file_info": file_info}})
                 rest = _strip_at(
-                    messages_to_plain_text(item for item in send.content if item is not file_msg),
-                    send.target_type or "",
+                    messages_to_plain_text((item for item in send.content if item is not media), target_type),
+                    target_type,
                 ).strip()
                 if rest:
                     payload["content"] = rest
@@ -866,7 +1204,7 @@ class QQBotUID:
 
         if image and send.target_id:
             file_info = await self.sender.upload_media(
-                send.target_type or "direct",
+                target_type,
                 send.target_id,
                 str(image.data),
             )
@@ -889,10 +1227,10 @@ class QQBotUID:
         items = send.content or []
         pieces: List[Tuple[str, bool]] = []
         mentions = [str(item.data) for item in items if item.type == "at" and item.data]
-        if mentions and send.target_type == "group":
-            pieces.append(("".join(at_tag(mention) for mention in mentions), False))
+        if mentions and send.target_type in {"group", "channel", "sub_channel"}:
+            pieces.append(("".join(at_tag(mention, send.target_type or "") for mention in mentions), False))
         for index, item in enumerate(items):
-            if item.type in {"markdown", "template_markdown"}:
+            if item.type == "markdown":
                 text_piece = _md_text(item)
                 if text_piece:
                     pieces.append((await self._resolve_markdown_images(text_piece), False))

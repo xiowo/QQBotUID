@@ -1,8 +1,8 @@
 import asyncio
 import hashlib
 import contextlib
-from pathlib import Path
 from typing import Any, Dict, Optional
+from pathlib import Path
 
 import gsuid_core
 from gsuid_core.i18n import t
@@ -45,9 +45,9 @@ def _bm_digest() -> bytes:
 
 def _apply_bm_fields() -> None:
     """把 bm_config 的最新值同步到 bot / segment 的模块级变量。"""
-    from gsuid_core.utils.plugins_config.gs_config import bm_config
     import gsuid_core.bot as core_bot
     import gsuid_core.segment as core_segment
+    from gsuid_core.utils.plugins_config.gs_config import bm_config
 
     modules: Dict[str, Any] = {"bot": core_bot, "segment": core_segment}
     for module_name, attr, key in _BM_FIELDS:

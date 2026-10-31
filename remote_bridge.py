@@ -1,30 +1,34 @@
 import asyncio
-from typing import Any, Dict, Optional
+from typing import Any, Optional
 
 import websockets
-from msgspec import DecodeError, ValidationError, json as msgjson
+from msgspec import json as msgjson
 from websockets.exceptions import ConnectionClosed
 
 from gsuid_core.logger import logger
-from gsuid_core.models import MessageSend, MessageReceive
+from gsuid_core.models import MessageReceive
 
-from .core_bridge import CoreTarget
+from .core_bridge import TargetBridge
 
 RECONNECT_MIN = 1.0
 RECONNECT_MAX = 30.0
 MAX_FRAME_BYTES: Optional[int] = None
 
 
-class RemoteBridge:
+class RemoteBridge(TargetBridge):
     def __init__(self, url: str) -> None:
+        super().__init__()
         self.url = url
         self._ws: Optional[Any] = None
         self._reader: Optional[asyncio.Task[None]] = None
         self._worker: Optional[asyncio.Task[None]] = None
         self._queue: asyncio.Queue = asyncio.Queue()
-        self._targets: Dict[str, CoreTarget] = {}
         self._closed = False
         self._disconnects = 0
+
+    @property
+    def _peer(self) -> str:
+        return self.url
 
     def maintenance_active(self, threshold: int = 1) -> bool:
         if self._closed or self._ws is not None:
@@ -41,15 +45,6 @@ class RemoteBridge:
             return
         self._closed = False
         self._reader = asyncio.create_task(self._forever(), name="QQBotUID.remote-bridge")
-
-    def add_target(self, target: CoreTarget) -> None:
-        self._targets[target.self_id] = target
-        logger.info(f"[QQBotUID] 机器人 {target.self_id} 已挂到核心连接 {self.url}")
-
-    def remove_target(self, target: CoreTarget) -> None:
-        for key, item in list(self._targets.items()):
-            if item is target:
-                self._targets.pop(key, None)
 
     async def push(self, msg: MessageReceive) -> None:
         ws = self._ws
@@ -116,18 +111,4 @@ class RemoteBridge:
                 self._queue.task_done()
 
     async def _dispatch(self, raw: Any) -> None:
-        body = raw.encode() if isinstance(raw, str) else raw
-        try:
-            send = msgjson.decode(body, type=MessageSend)
-        except (DecodeError, ValidationError) as e:
-            logger.warning(f"[QQBotUID] 核心下发的帧无法解析，已跳过: {e}")
-            return
-        if send.bot_self_id:
-            target = self._targets.get(send.bot_self_id)
-            if target is None:
-                logger.debug(f"[QQBotUID] 找不到 bot_self_id={send.bot_self_id} 的机器人，已丢弃")
-                return
-            await target.deliver(send)
-            return
-        for item in list(self._targets.values()):
-            await item.deliver(send)
+        await self._deliver(raw.encode() if isinstance(raw, str) else raw)

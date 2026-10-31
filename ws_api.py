@@ -7,6 +7,8 @@ from .user_info import QQBotUIDUser
 
 MEMBERS_REQUEST = "gscore_group_members_request"
 ACTIVE_TEST = "gscore_qqbot_active_test"
+ADMIN_REQUEST = "gscore_qqbot_admin_request"
+SHARE_LINK_REQUEST = "gscore_qqbot_share_link_request"
 CONTROL_TYPES: Tuple[str, ...] = (MEMBERS_REQUEST,)
 
 

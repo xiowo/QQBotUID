@@ -11,9 +11,15 @@
 - **♻️ 保存即生效**: 改完启用状态或接入方式点保存，插件自己重载运行时，不用重启核心。
 - **📝 Markdown 图片**: MD 里的图片会先换成公网链接（核心图床优先，失败回落 QQ 素材管理）
 - **🔘 按钮**: 核心下发按钮时按官方 keyboard 结构带上去。
+- **🎙️ 富媒体**: 语音（`record`）、视频（`video`）、文件（`file`）都会先上传到官方富媒体接口再发；`silk` / `amr` / `mp3` / `wav` / `ogg` 直接发，其他格式自动用 ffmpeg + pilk 转成 silk，没装 ffmpeg 会打警告并跳过。
+- **🗂️ 卡片**: 核心 `card` 段原样透传——`data["type"]` 是 `ark` 时按 `msg_type=3` 发 ark 模板消息（`content` 就是 ark 对象）
+- **⌨️ 流式与输入状态**: 私聊可开流式分片下发（内容短时自动对半分，失败自动回退普通消息）；可开收到私聊后先发「正在输入」状态。
 - **↩️ 引用与撤回**: 入站解析被引用消息的正文与图片；出站支持引用回复、主动撤回，并按 `echo` 回传消息 ID。
 - **🛡️ 禁言 / 解禁**: 支持核心下发的 `excute_ban_user`，秒数为 0 即解禁。
-- **📡 元事件上报**: 进群、退群、机器人被拉进群 / 被踢出群都转成核心的 meta 事件。
+- **👮 群管与菜单**: 踢人、禁言状态、机器人身份、群列表、入群申请审批、群黑名单、自定义菜单、指令面板都封装好了，通过控制帧 `gscore_qqbot_admin_request` 按 `action` 调用（见下文）。
+- **🔗 分享链接**: 通过控制帧 `gscore_qqbot_share_link_request` 生成「加机器人好友」的链接，`callback_data` 会随好友添加事件回传，用来区分渠道 / 邀请码（仅 Webhook 模式能收到回调）。
+- **📡 元事件上报**: 进群、退群、机器人被拉进群 / 被踢出群、入群申请、好友增删（带来源场景与 `callback_data`）、群消息开关、频道与论坛事件都转成核心的 meta 事件。
+- **🏛️ 频道**: 频道消息走 `/channels`，支持收发消息与频道事件；**频道私信（`/dms`）不支持**。
 - **🔄 断线重连**: 间隔可配（毫秒），0 表示断开立刻重连；连续快速失败会退避到 1 秒，连上并稳定 5 秒才清零失败计数。
 - **📮 主动消息队列**: 被动回复窗口（5 分钟）之外的发送自动转成主动消息，群聊和私聊各走一条独立车道，按可配置间隔放行限速（间隔填 `0` 则不限速，立刻放行）；订阅推送和其他主动推送共用同一条队列，先到先发。
 - **🧩 可选独立进程**: 打开后适配器跑在单独进程里，通过核心的 `/ws/{bot_id}` 接入。
@@ -44,7 +50,7 @@
 | :--- | :--- |
 | 插件页面 → **Bot 管理** | 机器人列表：启用状态、接入方式、扫码添加、群 / 频道二维码 |
 | 插件配置 → **QQBotUID配置** | 全局开关、独立进程模式、Webhook 监听参数 |
-| 插件配置 → **高级配置** | 接口地址、客户端名称、主动消息队列 |
+| 插件配置 → **高级配置** | 接口地址、客户端名称、主动消息队列、消息类型 |
 
 ### 页签：QQBotUID配置
 
@@ -92,7 +98,17 @@
 | 配置项 | 说明 | 默认值 |
 | :--- | :--- | :--- |
 | **私聊主动间隔 (ms)** | 私聊车道两条主动消息之间的放行间隔；填 `0` 立刻放行 | `110` |
-| **群聊主动间隔 (ms)** | 群聊车道两条主动消息之间的放行间隔；频道消息也走这条车道；填 `0` 立刻放行 | `1010` |
+| **群聊主动间隔 (ms)** | 群聊车道两条主动消息之间的放行间隔；填 `0` 立刻放行 | `1010` |
+
+**〔消息类型〕**
+
+| 配置项 | 说明 | 默认值 |
+| :--- | :--- | :--- |
+| **流式发送** | 私聊的纯文本 / markdown 回复按分片下发，像打字机一样逐段出现；失败自动回退普通消息。群聊没有流式接口，不受影响；带图片或按钮的回复也不走流式 | `false` |
+| **流式分片字符数** | 每次下发的字符数，越小越像打字机，请求次数也越多。内容比这个值短时会自动对半分，保证至少出两片 | `200` |
+| **流式分片间隔 (ms)** | 两次分片之间等多久 | `100` |
+| **私聊正在输入** | 收到私聊后先发一条「正在输入」状态；会占 1 次被动回复额度，剩最后 1 次时不发 | `false` |
+| **正在输入时长 (s)** | 状态持续秒数 | `30` |
 
 **〔维护提示〕**
 
@@ -169,6 +185,8 @@ payload = json.loads(receipts[0]) if receipts else {}
 | :--- | :--- | :--- |
 | `gscore_group_members_request` | `request_id`、`group_id`（或 `group_openid`）、`bot_id` | `group_openid` + `count` + `member_ids` |
 | `gscore_qqbot_active_test` | `target_type`（`group` / `direct`）、`target_id`、`bot_self_id` | `ok` + `message_id` + `error` |
+| `gscore_qqbot_admin_request` | `request_id`、`action`，其余参数随 action | `request_id` + `action` + `ok` + `data` / `error` |
+| `gscore_qqbot_share_link_request` | `request_id`、`callback_data`（可选） | `request_id` + `ok` + `data`（`url` + `callback_data`）/ `error` |
 
 
 
@@ -204,6 +222,176 @@ payload = json.loads(receipts[0]) if receipts else {}
 - **它绕开被动回复。** 发送时 `msg_id` 传空串，走的就是纯主动通道；如果拿入站消息的 `msg_id` 去发，平台会当成被动回复，测出来永远是成功。
 - **它不进主动消息队列。** 和普通主动推送不同，这条是同步直发、立即返回结果，不受 `主动消息间隔` 限制。
 - **回执同样走 `wait_recall=True`**，没有 `receipts` 就当失败处理。
+
+## 🎙️ 语音转码
+
+官方富媒体语音接口只稳定认 `silk`，其他格式经常被拒。所以发 `record` 段时：
+
+| 格式 | 处理 |
+| :--- | :--- |
+| `silk` / `amr` / `mp3` / `wav` / `ogg` | 直接上传，不转码 |
+| 其他（`flac`、`m4a`、`aac`、`opus`…） | `ffmpeg` 解成 24k 单声道 pcm，再用 `pilk` 编成 silk |
+| 认不出格式 | 同上，交给 ffmpeg 自己探测 |
+
+转码是**自动**的，不需要配置开关。
+
+### 依赖
+
+| 依赖 | 作用 | 缺了会怎样 |
+| :--- | :--- | :--- |
+| `ffmpeg` | 把源音频解成 pcm | 非直发格式的语音**打一条警告后跳过不发**，其余功能不受影响 |
+| `pilk` | 把 pcm 编成 silk | 同上 |
+
+```bash
+# pilk 是 pip 包
+pip install pilk
+
+# ffmpeg 装到 PATH 里就行，插件只认 PATH，不会自己去翻目录
+```
+
+插件只做一件事：在 `PATH` 里找 `ffmpeg`（`shutil.which`）。找不到就当没有，不会去猜安装目录、也不读额外的环境变量 —— 装的时候确保 `ffmpeg -version` 在命令行能跑通即可。
+
+找不到时的日志长这样，不会静默丢消息：
+
+```
+[QQBotUID] 语音是 flac，需要转成 silk 才能发；未检测到 ffmpeg，已跳过。
+装好 ffmpeg 后重启即可自动转码
+```
+
+**探测结果在进程内缓存**，装好 ffmpeg 后要重启核心（独立进程模式下等 daemon 自己重载）才会重新识别。
+
+## 🔗 分享链接与回调
+
+生成一条「加机器人好友」的分享链接，用户通过它加好友时，你生成时传的 `callback_data` 会原样回到好友添加事件里 —— 用来区分渠道、邀请码、绑定关系。
+
+### 生成链接
+
+走独立的控制帧 `gscore_qqbot_share_link_request`（跟群管那套分开，因为它是机器人级别的操作，不属于某个群）：
+
+```python
+receipts = await bot.send(
+    Message(
+        type="gscore_qqbot_share_link_request",
+        data={"request_id": "req-1", "callback_data": "invite-001"},
+    ),
+    wait_recall=True,
+)
+payload = json.loads(receipts[0])
+url = payload["data"]["url"]
+```
+
+回执：
+
+```json
+{
+  "request_id": "req-1",
+  "ok": true,
+  "data": {
+    "url": "https://q.qq.com/qqbot/openchat_business?bot_appid=...&callback_data=invite-001",
+    "callback_data": "invite-001"
+  }
+}
+```
+
+- `callback_data` **最长 32 字符**，超了直接回错，不会去请求平台。
+- 不传就自动生成一个 32 位 hex（`uuid4().hex`），回执里带回来方便你存。
+- 同一个 `callback_data` 可以重复用，平台不校验唯一性。
+- **这条帧也在 `runner` 里处理，不在 `ws_api`** —— 它要 `sender` 去请求平台，`ws_api.CONTROL_TYPES` 里没有登记它。
+
+### 收回调
+
+用户加好友后，核心会收到 `meta-friend_add` 事件，`data` 长这样：
+
+```json
+{
+  "user_id": "USER_OPENID",
+  "scene": 2003,
+  "scene_type": "开发者分享链接（站内）",
+  "callback_data": "invite-001",
+  "event_id": "EVT_..."
+}
+```
+
+`scene` 是官方原始值，`scene_type` 是它对应的中文场景名：
+
+| `scene` | 含义 |
+| :--- | :--- |
+| 1000 | 缺省默认值 |
+| 1001 / 1002 | 网络搜索（全部 tab / 机器人 tab） |
+| 1003 / 1004 | 群场景 / 空间场景 |
+| 2001 / 2002 | 站内 / 站外分享资料页 |
+| **2003 / 2004** | **开发者分享链接（站内 / 站外）** |
+
+所以判断「是不是从我的分享链接来的」，看 `scene` 是不是 2003 或 2004，再看 `callback_data` 对不对。
+
+### 限制
+
+**只有 Webhook 模式能收到 `callback_data`**，WebSocket 模式下平台不会下发 `scene_param`（字段为空串）。如果你主要用 WS，这个功能只能用来生成链接，回调拿不到。
+
+## 👮 群管与菜单接口
+
+和群成员列表一样，走一条控制帧 `gscore_qqbot_admin_request`：核心发帧，插件代调官方 API，结果原样回执。
+
+```python
+import json
+from gsuid_core.models import Message
+
+receipts = await bot.send(
+    Message(
+        type="gscore_qqbot_admin_request",
+        data={
+            "request_id": "req-1",
+            "action": "kick",
+            "group_openid": "1A790910D2...",
+            "member_openids": ["9E5C1F3A4B2D..."],
+            "add_to_blacklist": False,
+        },
+    ),
+    wait_recall=True,
+)
+payload = json.loads(receipts[0]) if receipts else {}
+if payload.get("ok"):
+    ...
+```
+
+回执统一是 `{"request_id", "action", "ok", "data" 或 "error"}`，`request_id` 原样带回：
+
+```json
+{"request_id": "req-1", "action": "kick", "ok": true}
+{"request_id": "req-2", "action": "group_list", "ok": true, "data": [{"group_openid": "..."}]}
+{"request_id": "req-3", "action": "kick", "ok": false, "error": "缺少 group_openid 或 member_openids"}
+```
+
+### action 一览
+
+| `action` | 额外参数 | 回执 `data` |
+| :--- | :--- | :--- |
+| `kick` | `group_openid`、`member_openids`、`add_to_blacklist` | 无 |
+| `mute` | `group_openid`、`member_openid`、`seconds`（0 为解禁） | 无 |
+| `mute_state` | `group_openid` | 群内禁言状态 |
+| `bot_state` | `group_openid` | 机器人在群里的身份（是否管理员） |
+| `group_list` | 无 | 机器人所在的群列表，已自动翻页 |
+| `join_requests` | `group_openid` | 入群申请列表 |
+| `approve` | `group_openid`、`member_openid`、`join_request_id` | 无 |
+| `decline` | `group_openid`、`member_openid`、`join_request_id`、`reason`、`add_to_blacklist` | 无 |
+| `blacklist` | `group_openid` | 群黑名单 |
+| `blacklist_add` / `blacklist_del` | `group_openid`、`member_openids` | 无 |
+| `menu_get` | 无 | 全局自定义菜单 |
+| `menu_set` | `menu`（非空 dict） | 无 |
+| `panel_list` | `scope`（`group` / `c2c` / `channel` / `dm`，默认 `group`） | 指令面板列表 |
+| `panel_create` | `scope`、`target_type`、`panel`、`user_openids`、`group_openids` | 新建的面板（含 `panel_id`） |
+| `panel_delete` | `panel_id` | 无 |
+
+`group_openid` 也可以写成 `group_id`，`member_openid` 也可以写成 `user_id`；列表参数写单个字符串会当成一项。
+
+### 几个必须注意的点
+
+- **`wait_recall=True` 不能省。** 不带它核心不会登记等待，`receipts` 永远是 `None`。
+- **`request_id` 必填。** 缺了回 `{"ok": false, "error": "missing request_id"}`，不会去调平台。
+- **未知 `action` 回 `ok: false`**，并在日志里打一条 `未知的群管 action`。
+- **`seconds` 只认秒数**（`int` 或纯数字字符串），和核心 `bot.ban()` 的 `duration` 同一套解析；写 `"10m"` 这种会被判为参数不完整。
+- **这条帧在 `runner` 里处理，不在 `ws_api`。** 它和 `gscore_qqbot_active_test` 一样需要 `sender`，`ws_api.CONTROL_TYPES` 里没有登记它。
+
 
 ## 🧩 独立进程模式
 

@@ -5,8 +5,8 @@ from sqlmodel import Field, col
 from sqlalchemy import Table, UniqueConstraint, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from gsuid_core.utils.database.base_models import BaseBotIDModel, with_session, with_read_session
 from gsuid_core.webconsole.mount_app import PageSchema, GsAdminModel, site
+from gsuid_core.utils.database.base_models import BaseBotIDModel, with_session, with_read_session
 
 CACHE_TTL = 24 * 3600
 

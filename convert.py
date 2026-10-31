@@ -33,9 +33,36 @@ _SCENE_OWN_IDX_KEY = "msg_idx"
 REFERENCE_MESSAGE_TYPE = 103
 
 GROUP_EVENTS = {"GROUP_AT_MESSAGE_CREATE", "GROUP_MESSAGE_CREATE"}
-DIRECT_EVENTS = {"C2C_MESSAGE_CREATE", "DIRECT_MESSAGE_CREATE"}
+DIRECT_EVENTS = {"C2C_MESSAGE_CREATE"}
 CHANNEL_EVENTS = {"AT_MESSAGE_CREATE", "MESSAGE_CREATE"}
 LIFECYCLE_EVENTS = {"GROUP_MEMBER_ADD", "GROUP_MEMBER_REMOVE", "GROUP_ADD_ROBOT", "GROUP_DEL_ROBOT"}
+# 好友增删 / 单聊消息开关，都属于 C2C 会话
+FRIEND_EVENTS = {"FRIEND_ADD", "FRIEND_DEL", "C2C_MSG_RECEIVE", "C2C_MSG_REJECT"}
+# 频道 / 子频道 / 论坛事件统一按频道会话处理
+CHANNEL_NOTICE_PREFIXES = ("GUILD_", "CHANNEL_", "AUDIO_OR_LIVE_CHANNEL_", "FORUM_", "OPEN_FORUM_")
+# 频道私信（/dms）不支持；消息审核结果只在撤回时有用，我们不做映射，一起丢弃
+IGNORED_EVENTS = {"DIRECT_MESSAGE_CREATE", "MESSAGE_AUDIT_PASS", "MESSAGE_AUDIT_REJECT"}
+META_EVENT_NAMES = {
+    "GROUP_JOIN_REQUEST": "group_join_request",
+    "GROUP_MSG_RECEIVE": "group_msg_receive",
+    "GROUP_MSG_REJECT": "group_msg_reject",
+    "FRIEND_ADD": "friend_add",
+    "FRIEND_DEL": "friend_del",
+    "C2C_MSG_RECEIVE": "c2c_msg_receive",
+    "C2C_MSG_REJECT": "c2c_msg_reject",
+}
+# 好友添加事件的来源场景
+FRIEND_SCENES = {
+    1000: "缺省默认值",
+    1001: "网络搜索（全部tab）",
+    1002: "网络搜索（机器人tab）",
+    1003: "群场景",
+    1004: "空间场景",
+    2001: "站内分享资料页",
+    2002: "站外分享资料页",
+    2003: "开发者分享链接（站内）",
+    2004: "开发者分享链接（站外）",
+}
 FORWARD_KINDS = {"node", "nodes", "forward", "forward_msg", "forward_message"}
 INTERACTION_EVENT = "INTERACTION_CREATE"
 INTERACTION_ACK_TYPES = (11, 12)
@@ -402,7 +429,13 @@ def _build_reference_content(elements: Any, seen_images: set[str], reply_id: str
 
 
 def _author_id(author: Dict[str, Any]) -> str:
-    return str(author.get("member_openid") or author.get("id") or author.get("union_openid") or "")
+    return str(
+        author.get("member_openid")
+        or author.get("id")
+        or author.get("user_openid")
+        or author.get("union_openid")
+        or ""
+    )
 
 
 def _event_user_id(d: Dict[str, Any]) -> str:
@@ -414,6 +447,7 @@ def _event_user_id(d: Dict[str, Any]) -> str:
         or d.get("user_openid")
         or d.get("member_openid")
         or d.get("group_member_openid")
+        or d.get("openid")
         or ""
     )
 
@@ -495,7 +529,35 @@ def _meta_message(
             data["timestamp"] = d.get("timestamp")
         name = "bot_join_group" if event_type == "GROUP_ADD_ROBOT" else "bot_exit_group"
         return Message(type=f"meta-{name}", data=data)
-    return None
+    name = META_EVENT_NAMES.get(event_type)
+    if name is None:
+        return None
+    data = {"group_id": group_id, "user_id": user_id}
+    if event_type == "GROUP_JOIN_REQUEST":
+        data.update(
+            {
+                "join_request_id": str(d.get("join_request_id") or ""),
+                "apply_source": str(d.get("apply_source") or ""),
+                "invited_by": str(d.get("invited_by") or ""),
+                "verify_info": d.get("verify_info") or {},
+                "risk_tips": str(d.get("risk_tips") or ""),
+            }
+        )
+    elif event_type == "FRIEND_ADD":
+        scene = d.get("scene")
+        try:
+            scene_code = int(scene)  # type: ignore[arg-type]
+        except (TypeError, ValueError):
+            scene_code = 0
+        data.update(
+            {
+                "scene": scene,
+                "scene_type": FRIEND_SCENES.get(scene_code, ""),
+                "callback_data": str(d.get("scene_param") or ""),
+                "event_id": str(d.get("event_id") or ""),
+            }
+        )
+    return Message(type=f"meta-{name}", data=data)
 
 
 def event_reply_id(msg_id: str) -> str:
@@ -590,17 +652,30 @@ def event_to_receive(
     if event_type == INTERACTION_EVENT:
         return _interaction_to_receive(payload, bot_id, bot_self_id, appid, group_name, nickname)
 
-    if event_type in GROUP_EVENTS or event_type in LIFECYCLE_EVENTS:
+    user_id = _event_user_id(d)
+    if event_type in GROUP_EVENTS or event_type in LIFECYCLE_EVENTS or event_type == "GROUP_JOIN_REQUEST":
         user_type = "group"
         target_id = str(d.get("group_openid") or d.get("group_id") or "")
-    elif event_type in DIRECT_EVENTS:
+    elif event_type in DIRECT_EVENTS or event_type in FRIEND_EVENTS:
         user_type = "direct"
         target_id = None
     elif event_type in CHANNEL_EVENTS:
         user_type = "channel"
         target_id = str(d.get("channel_id") or "")
+    elif event_type.startswith(CHANNEL_NOTICE_PREFIXES):
+        return MessageReceive(
+            bot_id=bot_id,
+            bot_self_id=bot_self_id,
+            msg_id=str(payload.get("id") or d.get("id") or ""),
+            user_type="channel",
+            group_id=str(d.get("channel_id") or d.get("guild_id") or "") or None,
+            user_id=user_id,
+            sender=_sender(d, user_id, str(d.get("channel_id") or ""), appid, group_name, nickname),
+            content=[Message(type=f"meta-{event_type}", data=d)],
+        )
+    elif event_type in IGNORED_EVENTS:
+        return None
     else:
-        user_id = _event_user_id(d)
         group_id = str(d.get("group_openid") or d.get("group_id") or "") or None
         return MessageReceive(
             bot_id=bot_id,
@@ -613,7 +688,6 @@ def event_to_receive(
             content=[Message(type=f"meta-{event_type}", data=d)],
         )
 
-    user_id = _event_user_id(d)
     content: List[Message] = []
     seen_images: set[str] = set()
 
@@ -707,20 +781,23 @@ def event_to_receive(
 AT_EVERYONE_TAG = "<qqbot-at-everyone />"
 
 
-def at_tag(data: Any) -> str:
-    """at 转官方标签：all 走 at-everyone，其余走 at-user"""
-    if str(data or "").strip().lower() == "all":
+def at_tag(data: Any, user_type: str = "") -> str:
+    """at 转官方标签：全体走 at-everyone，频道用 <@id>，其余走 at-user。"""
+    raw = str(data or "").strip()
+    if raw.lower() == "all":
         return AT_EVERYONE_TAG
-    return f'<qqbot-at-user id="{data}" />'
+    if user_type in {"channel", "sub_channel"}:
+        return f"<@{raw}>"
+    return f'<qqbot-at-user id="{raw}" />'
 
 
-def messages_to_plain_text(messages: Iterable[Message]) -> str:
+def messages_to_plain_text(messages: Iterable[Message], user_type: str = "") -> str:
     parts: List[str] = []
     for msg in messages:
         if msg.type == "text" and msg.data is not None:
             parts.append(str(msg.data))
         elif msg.type == "at" and msg.data is not None:
-            parts.append(at_tag(msg.data))
+            parts.append(at_tag(msg.data, user_type))
         elif msg.type == "record":
             parts.append("[语音]")
         elif msg.type == "video":

@@ -1,13 +1,18 @@
 import re
 import time
 import base64
+import random
+import shutil
 import asyncio
 import hashlib
 import binascii
+import tempfile
+import subprocess
 from io import BytesIO
 from typing import Any, Dict, List, Tuple, Union, Optional
 from pathlib import Path
 from datetime import datetime, timedelta
+from functools import lru_cache
 from contextvars import ContextVar
 from dataclasses import dataclass
 
@@ -220,7 +225,82 @@ def _b64decode(payload: str) -> Optional[bytes]:
         return None
 
 
-_FILE_TYPE_FILE = 4
+FILE_TYPE_IMAGE = 1
+FILE_TYPE_VIDEO = 2
+FILE_TYPE_AUDIO = 3
+FILE_TYPE_FILE = 4
+# 富媒体单文件直传上限，超过要走分片上传（暂不支持）
+MEDIA_DIRECT_LIMIT = 10 * 1024 * 1024
+# 素材名最长 20 字符，超了截断
+MEDIA_NAME_LIMIT = 20
+# 这些语音格式直接发，其余的先转 silk
+AUDIO_DIRECT_SUFFIXES = {"silk", "amr", "mp3", "wav", "ogg"}
+# silk 编码统一用 24k 单声道
+SILK_SAMPLE_RATE = 24000
+# 分享链接的 callback_data 最长 32 字符，加好友时随 FRIEND_ADD 的 scene_param 回来
+SHARE_CALLBACK_LIMIT = 32
+
+
+@lru_cache(maxsize=1)
+def ffmpeg_path() -> str:
+    """ffmpeg 可执行文件路径。"""
+    return shutil.which("ffmpeg") or ""
+
+
+def _silk_encode(raw: bytes, suffix: str) -> Optional[bytes]:
+    ffmpeg = ffmpeg_path()
+    if not ffmpeg:
+        return None
+    try:
+        import pilk
+    except ImportError:
+        logger.warning("[QQBotUID] 没装 pilk，无法把语音转成 silk；pip install pilk 即可")
+        return None
+    with tempfile.TemporaryDirectory(prefix="qqbotuid_silk_") as tmp:
+        src = Path(tmp) / f"src.{suffix or 'bin'}"
+        src.write_bytes(raw)
+        pcm = Path(tmp) / "out.pcm"
+        silk = Path(tmp) / "out.silk"
+        try:
+            done = subprocess.run(
+                [
+                    ffmpeg, "-y", "-loglevel", "error", "-i", str(src),
+                    "-f", "s16le", "-ar", str(SILK_SAMPLE_RATE), "-ac", "1", str(pcm),
+                ],
+                capture_output=True,
+                timeout=60,
+            )
+        except (OSError, subprocess.SubprocessError) as error:
+            logger.warning(f"[QQBotUID] 调 ffmpeg 失败: {error}")
+            return None
+        if done.returncode != 0 or not pcm.is_file() or pcm.stat().st_size == 0:
+            detail = done.stderr.decode("utf-8", "ignore").strip()[:200]
+            logger.warning(f"[QQBotUID] ffmpeg 解码失败（{suffix or '未知格式'}）: {detail or done.returncode}")
+            return None
+        try:
+            pilk.encode(str(pcm), str(silk), pcm_rate=SILK_SAMPLE_RATE, tencent=True)
+        except Exception as error:
+            logger.warning(f"[QQBotUID] silk 编码失败: {error}")
+            return None
+        if not silk.is_file() or silk.stat().st_size == 0:
+            return None
+        return silk.read_bytes()
+
+
+async def audio_to_silk(raw: bytes, suffix: str) -> Optional[bytes]:
+    """把非直发格式的语音转成 silk；没有 ffmpeg / pilk 或转码失败返回None。"""
+    if not ffmpeg_path():
+        logger.warning(
+            f"[QQBotUID] 语音是 {suffix or '未知格式'}，需要转成 silk 才能发；"
+            "未检测到 ffmpeg（PATH 里找不到），已跳过。装好 ffmpeg 后重启即可自动转码"
+        )
+        return None
+    converted = await asyncio.to_thread(_silk_encode, raw, suffix)
+    if converted is None:
+        logger.warning(f"[QQBotUID] 语音 {suffix or '未知格式'} 转 silk 失败，已跳过")
+        return None
+    logger.info(f"[QQBotUID] 语音 {suffix or '未知格式'} 已转成 silk: {_kb(len(converted))}")
+    return converted
 
 
 def split_file_data(data: str) -> Tuple[str, str]:
@@ -228,6 +308,38 @@ def split_file_data(data: str) -> Tuple[str, str]:
     if not sep:
         return "", name.strip()
     return name.strip(), payload.strip()
+
+
+def media_meta(raw: bytes) -> Tuple[str, int]:
+    """按文件头猜富媒体的扩展名和 file_type，猜不出给空串 / 0。"""
+    content_type, suffix = image_meta(raw)
+    if content_type:
+        return suffix, FILE_TYPE_IMAGE
+    if raw.startswith(b"\x02#!SILK") or raw.startswith(b"#!SILK"):
+        return "silk", FILE_TYPE_AUDIO
+    if raw.startswith(b"#!AMR"):
+        return "amr", FILE_TYPE_AUDIO
+    if raw.startswith(b"ID3") or raw[:2] == b"\xff\xfb" or raw[:2] == b"\xff\xf3":
+        return "mp3", FILE_TYPE_AUDIO
+    if raw[:4] == b"RIFF" and raw[8:12] == b"WAVE":
+        return "wav", FILE_TYPE_AUDIO
+    if raw[:4] == b"OggS":
+        return "ogg", FILE_TYPE_AUDIO
+    if len(raw) > 12 and raw[4:8] == b"ftyp":
+        return "mp4", FILE_TYPE_VIDEO
+    return "", 0
+
+
+def media_file_name(raw: bytes, hint: str = "") -> Tuple[str, int]:
+    """给富媒体拼一个带扩展名的文件名，返回 (文件名, file_type)。"""
+    suffix, kind = media_meta(raw)
+    name = Path(hint).name if hint else ""
+    if not name or "." not in name:
+        name = f"media_{int(time.time())}.{suffix or 'bin'}"
+    if len(name) > MEDIA_NAME_LIMIT:
+        ext = name.rsplit(".", 1)[-1]
+        name = f"{name[: MEDIA_NAME_LIMIT - len(ext) - 1]}.{ext}"
+    return name, kind
 
 
 async def file_bytes(payload: str) -> Optional[bytes]:
@@ -371,6 +483,16 @@ async def _post_json(
     return resp.status_code, data
 
 
+def _stream_id_of(data: Dict[str, Any]) -> str:
+    nested = data.get("data")
+    for item in (data, nested if isinstance(nested, dict) else {}):
+        for key in ("id", "stream_msg_id", "message_id"):
+            value = item.get(key)
+            if value:
+                return str(value)
+    return ""
+
+
 class QQMateriaHost:
     MAX_BYTES = 10 * 1024 * 1024
     QUOTA_EXCEEDED = 40035007
@@ -509,6 +631,25 @@ class QQSender:
         logger.debug(f"[QQBotUID] PUT {endpoint} -> {resp.status_code} {brief_text(resp.text)}")
         return 200 <= resp.status_code < 300
 
+    async def generate_url_link(self, callback_data: str = "") -> str:
+        """生成机器人分享链接（长度由调用方校验）。"""
+        callback = str(callback_data or "").strip()
+        ok, data = await self.post_json("/v2/generate_url_link", {"callback_data": callback})
+        if not ok:
+            logger.warning(f"[QQBotUID] 生成分享链接失败: {brief_text(data)}")
+            return ""
+        url = ""
+        nested = data.get("data") if isinstance(data, dict) else None
+        if isinstance(nested, dict):
+            url = str(nested.get("url") or "")
+        if not url and isinstance(data, dict):
+            url = str(data.get("url") or "")
+        if not url:
+            logger.warning(f"[QQBotUID] 分享链接响应里没有 url: {brief_text(data)}")
+            return ""
+        logger.info(f"[QQBotUID] 分享链接已生成 callback_data={callback or '-'}")
+        return url
+
     async def delete(self, endpoint: str) -> bool:
         client = await self.tm.client()
         logger.debug(f"[QQBotUID] DELETE {endpoint}")
@@ -539,26 +680,45 @@ class QQSender:
         self,
         target_type: str,
         target_id: str,
-        image_data: str,
-        file_type: int = 1,
+        media_data: str,
+        file_type: int = FILE_TYPE_IMAGE,
+        file_name: str = "",
     ) -> Optional[str]:
+        """富媒体上传（图片 / 语音 / 视频），返回 file_info 给发送时用。"""
         endpoint = _files_endpoint(target_type, target_id)
         if not endpoint:
             return None
-        url = public_image_url(image_data)
+        url = public_image_url(media_data)
         if url:
-            file_info = await self._upload_json(endpoint, {"srv_send_msg": False, "file_type": file_type, "url": url})
+            body: Dict[str, Any] = {"srv_send_msg": False, "file_type": file_type, "url": url}
+            if file_name:
+                body["file_name"] = file_name
+            file_info = await self._upload_json(endpoint, body)
             if file_info:
                 return file_info
-        raw = await file_bytes(image_data)
+        raw = await file_bytes(media_data)
         if raw is None:
-            logger.warning(f"[QQBotUID] 取不到图片内容，跳过上传: {image_data[:64]}")
+            logger.warning(f"[QQBotUID] 取不到媒体内容，跳过上传: {media_data[:64]}")
             return None
+        if len(raw) > MEDIA_DIRECT_LIMIT:
+            logger.warning(
+                f"[QQBotUID] 富媒体 {_kb(len(raw))} 超过直传上限 10MB，暂不支持分片上传，已跳过"
+            )
+            return None
+        name, _ = media_file_name(raw, file_name)
+        suffix, _ = media_meta(raw)
+        if file_type == FILE_TYPE_AUDIO and suffix not in AUDIO_DIRECT_SUFFIXES:
+            converted = await audio_to_silk(raw, suffix)
+            if converted is None:
+                return None
+            raw = converted
+            name = f"voice_{int(time.time())}.silk"
         return await self._upload_json(
             endpoint,
             {
                 "srv_send_msg": False,
                 "file_type": file_type,
+                "file_name": name,
                 "file_data": base64.b64encode(raw).decode(),
             },
         )
@@ -574,7 +734,7 @@ class QQSender:
             return None
         url = payload.removeprefix("link://")
         if url.startswith(("http://", "https://")):
-            body: Dict[str, Any] = {"srv_send_msg": False, "file_type": _FILE_TYPE_FILE, "url": url}
+            body: Dict[str, Any] = {"srv_send_msg": False, "file_type": FILE_TYPE_FILE, "url": url}
             if name:
                 body["file_name"] = name
             file_info = await self._upload_json(endpoint, body)
@@ -589,7 +749,7 @@ class QQSender:
             endpoint,
             {
                 "srv_send_msg": False,
-                "file_type": _FILE_TYPE_FILE,
+                "file_type": FILE_TYPE_FILE,
                 "file_name": name or "file",
                 "file_data": base64.b64encode(raw).decode(),
             },
@@ -607,3 +767,295 @@ class QQSender:
             return data.get("file_info") or nested.get("file_info")
         logger.warning(f"[QQBotUID] 富媒体上传失败: HTTP {status} {brief_text(data)}")
         return None
+
+    async def get_json(self, endpoint: str, params: Optional[Dict[str, Any]] = None) -> Tuple[int, Any]:
+        """GET 一个接口，返回 (状态码, 解析后的 body)。"""
+        client = await self.tm.client()
+        resp = await client.get(
+            endpoint,
+            params=params,
+            headers={"Authorization": await self.tm.authorization()},
+        )
+        try:
+            data: Any = resp.json()
+        except Exception:
+            data = {}
+        logger.debug(f"[QQBotUID] GET {endpoint} -> {resp.status_code} {brief_text(data)}")
+        return resp.status_code, data
+
+    async def send_input_notify(self, user_id: str, seconds: int = 30, msg_id: str = "") -> bool:
+        """C2C「正在输入」状态（msg_type=6），不产生消息内容。"""
+        if not user_id:
+            return False
+        body: Dict[str, Any] = {
+            "msg_type": 6,
+            "input_notify": {"input_type": 1, "input_second": int(seconds)},
+        }
+        if msg_id:
+            body["msg_id"] = msg_id
+        ok, data = await self.post_json(f"/v2/users/{user_id}/messages", body)
+        if not ok:
+            logger.debug(f"[QQBotUID] 正在输入状态发送失败: {brief_text(data)}")
+        return ok
+
+    async def send_stream(
+        self,
+        target_id: str,
+        content: str,
+        msg_id: str = "",
+        event_id: str = "",
+        chunk_size: int = 200,
+        delay_ms: int = 100,
+    ) -> Tuple[bool, str]:
+        """C2C 流式消息：按分片下发，返回 (是否成功, 消息 id)。"""
+        if not target_id or not content:
+            return False, ""
+        endpoint = f"/v2/users/{target_id}/stream_messages"
+        stream_id = ""
+        base_seq = random.randint(1_000_000, 9_000_000)
+        index = 0
+        for start in range(0, len(content), chunk_size):
+            done = start + chunk_size >= len(content)
+            body: Dict[str, Any] = {
+                "msg_seq": base_seq + index,
+                "input_mode": "replace",
+                "input_state": 10 if done else 1,
+                "content_type": "markdown",
+                "content_raw": content[: start + chunk_size],
+                "index": index,
+            }
+            if event_id:
+                body["event_id"] = event_id
+            elif msg_id:
+                body["msg_id"] = msg_id
+            if stream_id:
+                body["stream_msg_id"] = stream_id
+            status, data = await _post_json(self.tm, endpoint, body)
+            if not 200 <= status < 300:
+                logger.warning(
+                    f"[QQBotUID] 流式分片失败: HTTP {status} {brief_text(data)} "
+                    f"(index={index}, msg_seq={body['msg_seq']}, 已发 {index} 片)"
+                )
+                return False, stream_id
+            if not stream_id:
+                stream_id = _stream_id_of(data)
+                if not stream_id:
+                    logger.debug(f"[QQBotUID] 流式首片没拿到 stream_msg_id: {brief_text(data)}")
+            index += 1
+            if not done and delay_ms:
+                await asyncio.sleep(delay_ms / 1000)
+        logger.info(f"[QQBotUID] 流式下发完成 {index} 片 -> {target_id[:8]}…")
+        return True, stream_id
+
+    async def kick_group_members(
+        self,
+        group_id: str,
+        member_openids: List[str],
+        add_to_blacklist: bool = False,
+    ) -> bool:
+        """踢人，一次最多 20 个。"""
+        if not group_id or not member_openids:
+            return False
+        ok, data = await self.post_json(
+            f"/v2/groups/{group_id}/batch_remove_members",
+            {"member_openids": member_openids[:20], "add_to_member_blacklist": add_to_blacklist},
+        )
+        if not ok:
+            logger.warning(f"[QQBotUID] 踢人失败: {brief_text(data)}")
+        return ok
+
+    async def get_group_mute_state(self, group_id: str) -> Dict[str, Any]:
+        """群内当前禁言状态。"""
+        if not group_id:
+            return {}
+        status, data = await self.get_json(f"/v2/groups/{group_id}/restrict_chat_setting")
+        return data if 200 <= status < 300 and isinstance(data, dict) else {}
+
+    async def get_group_bot_state(self, group_id: str) -> Dict[str, Any]:
+        """机器人在该群的状态（是否管理员等）。"""
+        if not group_id:
+            return {}
+        status, data = await self.get_json(f"/v2/groups/{group_id}/bot_state")
+        return data if 200 <= status < 300 and isinstance(data, dict) else {}
+
+    async def get_group_list(self) -> List[Dict[str, Any]]:
+        """机器人所在的群列表，自动翻页。"""
+        groups: List[Dict[str, Any]] = []
+        after = None
+        while True:
+            status, data = await self.get_json(
+                "/users/@me/groups",
+                {"after": after} if after else None,
+            )
+            if not 200 <= status < 300 or not isinstance(data, list) or not data:
+                break
+            groups.extend(item for item in data if isinstance(item, dict))
+            after = str(data[-1].get("guild_id") or "")
+            if not after:
+                break
+        return groups
+
+    async def list_join_requests(self, group_id: str) -> List[Dict[str, Any]]:
+        """入群申请列表，自动翻页。"""
+        if not group_id:
+            return []
+        requests: List[Dict[str, Any]] = []
+        cursor = None
+        while True:
+            params: Dict[str, Any] = {"limit": 50}
+            if cursor:
+                params["cursor"] = cursor
+            status, data = await self.get_json(f"/v2/groups/{group_id}/join_request_list", params)
+            if not 200 <= status < 300 or not isinstance(data, dict):
+                break
+            items = data.get("list")
+            if isinstance(items, list):
+                requests.extend(item for item in items if isinstance(item, dict))
+            cursor = str(data.get("next_cursor") or "")
+            if not cursor:
+                break
+        return requests
+
+    async def approve_join_request(
+        self,
+        group_id: str,
+        member_openid: str,
+        join_request_id: str = "",
+    ) -> bool:
+        return await self._approval(group_id, member_openid, "approve", join_request_id)
+
+    async def decline_join_request(
+        self,
+        group_id: str,
+        member_openid: str,
+        join_request_id: str = "",
+        reason: str = "",
+        add_to_blacklist: bool = False,
+    ) -> bool:
+        return await self._approval(
+            group_id,
+            member_openid,
+            "decline",
+            join_request_id,
+            reason,
+            add_to_blacklist,
+        )
+
+    async def _approval(
+        self,
+        group_id: str,
+        member_openid: str,
+        op: str,
+        join_request_id: str = "",
+        reason: str = "",
+        add_to_blacklist: bool = False,
+    ) -> bool:
+        if not group_id or not member_openid:
+            return False
+        ok, data = await self.post_json(
+            f"/v2/groups/{group_id}/approval_join_request/{member_openid}",
+            {
+                "op": op,
+                "join_request_id": join_request_id,
+                "reject_reason": reason,
+                "add_to_member_blacklist": add_to_blacklist,
+            },
+        )
+        if not ok:
+            logger.warning(f"[QQBotUID] 入群审批({op})失败: {brief_text(data)}")
+        return ok
+
+    async def get_member_blacklist(self, group_id: str) -> List[Dict[str, Any]]:
+        if not group_id:
+            return []
+        users: List[Dict[str, Any]] = []
+        cursor = None
+        while True:
+            params: Dict[str, Any] = {"limit": 100}
+            if cursor:
+                params["cursor"] = cursor
+            status, data = await self.get_json(f"/v2/groups/{group_id}/member_blacklist", params)
+            if not 200 <= status < 300 or not isinstance(data, dict):
+                break
+            items = data.get("users")
+            if isinstance(items, list):
+                users.extend(item for item in items if isinstance(item, dict))
+            cursor = str(data.get("next_cursor") or "")
+            if not cursor:
+                break
+        return users
+
+    async def change_member_blacklist(self, group_id: str, op: str, member_openids: List[str]) -> bool:
+        """op 取 add / del，一次最多 20 个。"""
+        if not group_id or not member_openids or op not in {"add", "del"}:
+            return False
+        ok, data = await self.post_json(
+            f"/v2/groups/{group_id}/member_blacklist",
+            {"op": op, "member_openids": member_openids[:20]},
+        )
+        if not ok:
+            logger.warning(f"[QQBotUID] 群黑名单({op})失败: {brief_text(data)}")
+        return ok
+
+    async def get_menu(self) -> Dict[str, Any]:
+        """全局自定义菜单。"""
+        status, data = await self.get_json("/v2/menu")
+        return data if 200 <= status < 300 and isinstance(data, dict) else {}
+
+    async def change_menu(self, menu: Dict[str, Any]) -> bool:
+        if not menu:
+            return False
+        client = await self.tm.client()
+        resp = await client.put(
+            "/v2/menu",
+            json={"menu": menu},
+            headers={"Authorization": await self.tm.authorization()},
+        )
+        logger.debug(f"[QQBotUID] PUT /v2/menu -> {resp.status_code} {brief_text(resp.text)}")
+        return 200 <= resp.status_code < 300
+
+    async def list_panels(self, scope: str = "group") -> List[Dict[str, Any]]:
+        """指令面板列表，scope 取 c2c / group / channel / dm。"""
+        panels: List[Dict[str, Any]] = []
+        cursor = None
+        while True:
+            params: Dict[str, Any] = {"scope": scope, "limit": 50}
+            if cursor:
+                params["cursor"] = cursor
+            status, data = await self.get_json("/v2/panels", params)
+            if not 200 <= status < 300 or not isinstance(data, dict):
+                break
+            records = data.get("records")
+            if isinstance(records, list):
+                panels.extend(item for item in records if isinstance(item, dict))
+            if data.get("is_end"):
+                break
+            cursor = str(data.get("next_cursor") or "")
+            if not cursor:
+                break
+        return panels
+
+    async def create_panel(
+        self,
+        scope: str,
+        target_type: str,
+        panel: Dict[str, Any],
+        user_openids: Optional[List[str]] = None,
+        group_openids: Optional[List[str]] = None,
+    ) -> Dict[str, Any]:
+        ok, data = await self.post_json(
+            "/v2/panels",
+            {
+                "scope": scope,
+                "target_type": target_type,
+                "user_openids": user_openids or [],
+                "group_openids": group_openids or [],
+                "panel": panel,
+            },
+        )
+        return data if ok else {}
+
+    async def delete_panel(self, panel_id: str) -> bool:
+        if not panel_id:
+            return False
+        return await self.delete(f"/v2/panels/{panel_id}")

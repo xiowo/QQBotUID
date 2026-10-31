@@ -128,9 +128,44 @@ ADVANCED_CONFIG_DEFAULT: dict[str, GSC] = {
     ),
     "proactive_group_interval": GsIntConfig(
         title="群聊主动间隔 (ms)",
-        desc="群聊车道两条主动消息之间的放行间隔；频道消息也走这条车道。填 0 表示不限速，立刻放行。",
+        desc="群聊车道两条主动消息之间的放行间隔。填 0 表示不限速，立刻放行。",
         data=1010,
         max_value=60000,
+    ),
+    "_DividerMessage": GsDivider("消息类型", ""),
+    "stream_enabled": GsBoolConfig(
+        title="流式发送",
+        desc=(
+            "开启后私聊的纯文本 / markdown 回复按分片流式下发，像打字机一样逐段出现；"
+            "发送失败会自动回退成普通消息。群聊没有流式接口，不受影响。"
+        ),
+        data=False,
+    ),
+    "stream_chunk_size": GsIntConfig(
+        title="流式分片字符数",
+        desc="每次下发的字符数，越小越像打字机，但请求次数也越多。内容比这个值短时会自动对半分，保证至少两片。",
+        data=200,
+        max_value=2000,
+    ),
+    "stream_delay_ms": GsIntConfig(
+        title="流式分片间隔 (ms)",
+        desc="两次分片之间等多久再发下一段。",
+        data=100,
+        max_value=5000,
+    ),
+    "input_notify_enabled": GsBoolConfig(
+        title="私聊正在输入",
+        desc=(
+            "收到私聊后先发一条「正在输入」状态再等核心回复。"
+            "会占用 1 次被动回复额度，剩最后 1 次时不再发，避免真回复被挤到主动通道。"
+        ),
+        data=False,
+    ),
+    "input_notify_seconds": GsIntConfig(
+        title="正在输入时长 (s)",
+        desc="「正在输入」状态持续多少秒。",
+        data=30,
+        max_value=300,
     ),
     "_DividerMaintenance": GsDivider("维护提示", ""),
     "disconnect_reply_enabled": GsBoolConfig(
@@ -217,6 +252,31 @@ def maintenance_message() -> str:
 
 def master_only_enabled() -> bool:
     return bool(advanced_config.get_config("master_only_enabled").data)
+
+
+@dataclass(slots=True)
+class StreamSetting:
+    """流式发送参数。"""
+
+    chunk_size: int
+    delay_ms: int
+
+
+def stream_setting() -> Optional[StreamSetting]:
+    """没开流式返回None。"""
+    if not bool(advanced_config.get_config("stream_enabled").data):
+        return None
+    return StreamSetting(
+        chunk_size=max(_cfg_int(advanced_config, "stream_chunk_size", 200), 1),
+        delay_ms=max(_cfg_int(advanced_config, "stream_delay_ms", 100), 0),
+    )
+
+
+def input_notify_seconds() -> int:
+    """「私聊正在输入」的持续秒数。"""
+    if not bool(advanced_config.get_config("input_notify_enabled").data):
+        return 0
+    return max(_cfg_int(advanced_config, "input_notify_seconds", 30), 1)
 
 
 def master_ids() -> set[str]:

@@ -1,5 +1,5 @@
 import asyncio
-from typing import Callable, Optional, Protocol, Awaitable
+from typing import Dict, Callable, Optional, Protocol, Awaitable
 
 from msgspec import DecodeError, ValidationError, json as msgjson
 from starlette.types import Scope, Message
@@ -17,6 +17,40 @@ class CoreTarget(Protocol):
     def self_id(self) -> str: ...
 
     async def deliver(self, send: MessageSend) -> None: ...
+
+
+class TargetBridge:
+    def __init__(self) -> None:
+        self._targets: Dict[str, CoreTarget] = {}
+
+    @property
+    def _peer(self) -> str:
+        raise NotImplementedError
+
+    def add_target(self, target: CoreTarget) -> None:
+        self._targets[target.self_id] = target
+        logger.info(f"[QQBotUID] 机器人 {target.self_id} 已挂到核心连接 {self._peer}")
+
+    def remove_target(self, target: CoreTarget) -> None:
+        for key, item in list(self._targets.items()):
+            if item is target:
+                self._targets.pop(key, None)
+
+    async def _deliver(self, body: bytes) -> None:
+        try:
+            send = msgjson.decode(body, type=MessageSend)
+        except (DecodeError, ValidationError) as e:
+            logger.warning(f"[QQBotUID] 核心下发的帧无法解析，已跳过: {e}")
+            return
+        if send.bot_self_id:
+            target = self._targets.get(send.bot_self_id)
+            if target is None:
+                logger.debug(f"[QQBotUID] 找不到 bot_self_id={send.bot_self_id} 的机器人，已丢弃")
+                return
+            await target.deliver(send)
+            return
+        for item in list(self._targets.values()):
+            await item.deliver(send)
 
 
 def _build_scope(bot_id: str) -> Scope:
@@ -67,34 +101,29 @@ class CoreSocket:
         self._closed.set()
 
 
-class CoreBridge:
+class CoreBridge(TargetBridge):
     def __init__(self, route_bot_id: str) -> None:
         from gsuid_core.handler import _INBOUND_SLOTS
 
+        super().__init__()
         self.route_bot_id = route_bot_id
         self._slots = asyncio.Semaphore(_INBOUND_SLOTS)
         self._bot: Optional[_Bot] = None
         self._socket: Optional[CoreSocket] = None
         self._process: Optional[asyncio.Task[None]] = None
         self._process_bot: Optional[_Bot] = None
-        self._targets: dict[str, CoreTarget] = {}
+
+    @property
+    def _peer(self) -> str:
+        return self.route_bot_id
 
     async def attach(self) -> CoreSocket:
-        socket = CoreSocket(self.route_bot_id, self._dispatch)
+        socket = CoreSocket(self.route_bot_id, self._deliver)
         self._bot = await gss.connect(socket.websocket, self.route_bot_id)
         self._socket = socket
         self._ensure_process(self._bot)
         logger.info(f"[QQBotUID] 已注册到核心，连接标识 {self.route_bot_id}")
         return socket
-
-    def add_target(self, target: CoreTarget) -> None:
-        self._targets[target.self_id] = target
-        logger.info(f"[QQBotUID] 机器人 {target.self_id} 已挂到核心连接 {self.route_bot_id}")
-
-    def remove_target(self, target: CoreTarget) -> None:
-        for key, item in list(self._targets.items()):
-            if item is target:
-                self._targets.pop(key, None)
 
     async def detach(self, socket: CoreSocket) -> None:
         if self._socket is not socket:
@@ -130,22 +159,6 @@ class CoreBridge:
         from gsuid_core.handler import run_inbound_event
 
         bot._add_bg_task(asyncio.create_task(run_inbound_event(bot, msg, self._slots)))
-
-    async def _dispatch(self, body: bytes) -> None:
-        try:
-            send = msgjson.decode(body, type=MessageSend)
-        except (DecodeError, ValidationError) as e:
-            logger.warning(f"[QQBotUID] 核心下发的帧无法解析，已跳过: {e}")
-            return
-        if send.bot_self_id:
-            target = self._targets.get(send.bot_self_id)
-            if target is None:
-                logger.debug(f"[QQBotUID] 找不到 bot_self_id={send.bot_self_id} 的机器人，已丢弃")
-                return
-            await target.deliver(send)
-            return
-        for item in list(self._targets.values()):
-            await item.deliver(send)
 
     def _ensure_process(self, bot: _Bot) -> None:
         if self._process is not None and not self._process.done() and self._process_bot is bot:

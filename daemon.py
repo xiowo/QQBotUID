@@ -1,6 +1,6 @@
+import io
 import os
 import sys
-import io
 import time
 import types
 import signal
@@ -8,13 +8,13 @@ import asyncio
 import hashlib
 import logging
 import tempfile
+import importlib
 import threading
 import traceback
-import importlib
 import contextlib
-from collections import deque
-from typing import Any, Callable, Deque, Dict, List, Optional
+from typing import Any, Dict, List, Deque, Callable, Optional
 from pathlib import Path
+from collections import deque
 from urllib.parse import quote
 from multiprocessing.connection import Listener
 

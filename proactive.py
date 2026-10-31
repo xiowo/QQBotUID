@@ -67,8 +67,9 @@ class PassiveWindow:
 
 
 class ProactiveLane:
-    def __init__(self, scene: str) -> None:
+    def __init__(self, scene: str, interval_ms: Optional[int] = None) -> None:
         self.scene = scene
+        self._interval_ms = interval_ms
         self._queue: List[ProactiveJob] = []
         self._worker: Optional["asyncio.Task[None]"] = None
         self._tasks: Set["asyncio.Task[Any]"] = set()
@@ -82,11 +83,17 @@ class ProactiveLane:
         if self._worker is None or self._worker.done():
             self._worker = asyncio.create_task(self._drain(), name=f"QQBotUID.proactive.{self.scene}")
 
+    def interval_ms(self) -> int:
+        """本车道的放行间隔；构造时传了就用传的，否则读配置。"""
+        if self._interval_ms is not None:
+            return max(int(self._interval_ms), 0)
+        return proactive_interval_ms(self.scene)
+
     async def _drain(self) -> None:
         try:
             while self._queue:
                 job = self._queue.pop(0)
-                wait = proactive_interval_ms(self.scene) / 1000 - (time.monotonic() - self._last_sent)
+                wait = self.interval_ms() / 1000 - (time.monotonic() - self._last_sent)
                 if wait > 0:
                     await asyncio.sleep(wait)
                 self._last_sent = time.monotonic()
@@ -126,12 +133,18 @@ class ProactiveDispatcher:
     def __init__(self) -> None:
         self.direct = ProactiveLane("direct")
         self.group = ProactiveLane("group")
+        # 频道先不做主动消息间隔：间隔固定 0，提交即发，不提供配置项
+        self.channel = ProactiveLane("channel", 0)
 
     def lane_for(self, target_type: Optional[str]) -> ProactiveLane:
-        return self.direct if target_type == "direct" else self.group
+        if target_type == "direct":
+            return self.direct
+        if target_type in {"channel", "sub_channel"}:
+            return self.channel
+        return self.group
 
     def submit(self, target_type: Optional[str], job: ProactiveJob, front: bool = False) -> None:
         self.lane_for(target_type).submit(job, front)
 
     async def close(self) -> None:
-        await asyncio.gather(self.direct.close(), self.group.close())
+        await asyncio.gather(self.direct.close(), self.group.close(), self.channel.close())

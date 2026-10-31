@@ -9,8 +9,8 @@ sv = SV("QQBotUID", pm=6, area="ALL")
 _LABELS = {
     "group": ("群", "用户"),
     "direct": ("", "用户"),
-    "channel": ("子频道", "用户"),
-    "sub_channel": ("子频道", "用户"),
+"channel": ("子频道", "用户"),
+"sub_channel": ("子频道", "用户"),
 }
 
 
