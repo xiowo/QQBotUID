@@ -13,6 +13,7 @@ from gsuid_core.utils.database.base_models import BaseBotIDModel, with_session, 
 
 FLUSH_SECONDS = 5.0
 EXIT_META = "meta-user_exit_group"
+JOIN_META = "meta-user_join_group"
 
 MemberKey = Tuple[str, str, str]
 
@@ -113,12 +114,20 @@ class UserRecorder:
         self._task: Optional["asyncio.Task[None]"] = None
 
     def observe(self, receive: MessageReceive) -> None:
+        head = receive.content[0].type if receive.content else None
+        if head == JOIN_META:
+            present = True
+        elif head == EXIT_META:
+            present = False
+        elif head and head.startswith("meta-"):
+            return
+        else:
+            present = True
         user_id = str(receive.user_id or "")
         if not user_id:
             return
-        head = receive.content[0].type if receive.content else None
         key = (receive.bot_id, str(receive.group_id or ""), user_id)
-        self._pending[key] = head != EXIT_META
+        self._pending[key] = present
         if self._task is None or self._task.done():
             self._task = asyncio.create_task(self._loop(), name="QQBotUID.user_recorder")
 

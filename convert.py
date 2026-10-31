@@ -443,9 +443,9 @@ def _event_user_id(d: Dict[str, Any]) -> str:
     author = raw_author if isinstance(raw_author, dict) else {}
     return str(
         _author_id(author)
+        or d.get("member_openid")
         or d.get("op_member_openid")
         or d.get("user_openid")
-        or d.get("member_openid")
         or d.get("group_member_openid")
         or d.get("openid")
         or ""
@@ -587,6 +587,11 @@ def interaction_ack_id(payload: Dict[str, Any]) -> str:
     return str(d.get("id") or payload.get("id") or "")
 
 
+def _strip_appid_prefix(user_id: str) -> str:
+    """appid:openid → openid"""
+    return user_id.split(":", 1)[1] if ":" in user_id else user_id
+
+
 def _interaction_to_receive(
     payload: Dict[str, Any],
     bot_id: str,
@@ -623,6 +628,8 @@ def _interaction_to_receive(
         user_id = str(resolved.get("user_id") or "")
     else:
         return None
+
+    user_id = _strip_appid_prefix(user_id)
 
     return MessageReceive(
         bot_id=bot_id,
