@@ -9,6 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from gsuid_core.logger import logger
 from gsuid_core.models import MessageReceive
 from gsuid_core.utils.database.base_models import BaseBotIDModel, with_session, with_read_session
+from gsuid_core.webconsole.mount_app import PageSchema, GsAdminModel, site
 
 FLUSH_SECONDS = 5.0
 EXIT_META = "meta-user_exit_group"
@@ -147,3 +148,14 @@ class UserRecorder:
             with contextlib.suppress(asyncio.CancelledError):
                 await task
         await self.flush()
+
+
+@site.register_admin
+class QQBotUIDUserAdmin(GsAdminModel):
+    pk_name = "id"
+    page_schema = PageSchema(
+        label="QQBotUID 用户记录",
+        icon="fa fa-user",
+    )  # type: ignore
+    model = QQBotUIDUser
+

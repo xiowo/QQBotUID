@@ -6,6 +6,7 @@ from sqlalchemy import Table, UniqueConstraint, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from gsuid_core.utils.database.base_models import BaseBotIDModel, with_session, with_read_session
+from gsuid_core.webconsole.mount_app import PageSchema, GsAdminModel, site
 
 CACHE_TTL = 24 * 3600
 
@@ -93,3 +94,14 @@ class QQBotUIDGroupInfo(BaseBotIDModel, table=True):
         group_openid: str,
     ) -> Optional["QQBotUIDGroupInfo"]:
         return await cls._fetch(session, bot_id, group_openid)
+
+
+@site.register_admin
+class QQBotUIDGroupInfoAdmin(GsAdminModel):
+    pk_name = "id"
+    page_schema = PageSchema(
+        label="QQBotUID 群信息",
+        icon="fa fa-users",
+    )  # type: ignore
+    model = QQBotUIDGroupInfo
+
