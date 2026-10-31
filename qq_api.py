@@ -211,6 +211,22 @@ def _files_endpoint(target_type: str, target_id: str) -> str:
     return f"/v2/users/{target_id}/files"
 
 
+def _chunk_base(target_type: str, target_id: str) -> str:
+    if not target_id or target_type in {"channel", "sub_channel"}:
+        return ""
+    return f"/v2/groups/{target_id}" if target_type == "group" else f"/v2/users/{target_id}"
+
+
+def _clip_media_name(name: str) -> str:
+    """素材名超长时保扩展名截断。"""
+    if len(name) <= MEDIA_NAME_LIMIT:
+        return name
+    ext = name.rsplit(".", 1)[-1] if "." in name else ""
+    if not ext:
+        return name[:MEDIA_NAME_LIMIT]
+    return f"{name[: MEDIA_NAME_LIMIT - len(ext) - 1]}.{ext}"
+
+
 def public_image_url(image_data: str) -> str:
     url = image_data.removeprefix("link://")
     return url if url.startswith(("http://", "https://")) else ""
@@ -229,10 +245,25 @@ FILE_TYPE_IMAGE = 1
 FILE_TYPE_VIDEO = 2
 FILE_TYPE_AUDIO = 3
 FILE_TYPE_FILE = 4
-# 富媒体单文件直传上限，超过要走分片上传（暂不支持）
+# 富媒体单文件直传上限，超过走分片上传
 MEDIA_DIRECT_LIMIT = 10 * 1024 * 1024
 # 素材名最长 20 字符，超了截断
 MEDIA_NAME_LIMIT = 20
+# 分片上传的 md5_10m 只算文件前 10002432 字节，不足则等于整文件 md5
+CHUNK_MD5_PREFIX = 10002432
+# 分片 PUT 并发数
+CHUNK_CONCURRENCY = 3
+# 分片 PUT 超时（秒）
+CHUNK_PUT_TIMEOUT = 60.0
+# files 收尾平台侧是异步的，失败重试次数
+CHUNK_FINISH_RETRY = 2
+# 分片也绕不过平台单文件上限，超了直接跳过别白传
+MEDIA_SIZE_LIMITS = {
+    FILE_TYPE_IMAGE: 30 * 1024 * 1024,
+    FILE_TYPE_VIDEO: 200 * 1024 * 1024,
+    FILE_TYPE_AUDIO: 20 * 1024 * 1024,
+    FILE_TYPE_FILE: 200 * 1024 * 1024,
+}
 # 这些语音格式直接发，其余的先转 silk
 AUDIO_DIRECT_SUFFIXES = {"silk", "amr", "mp3", "wav", "ogg"}
 # silk 编码统一用 24k 单声道
@@ -336,10 +367,7 @@ def media_file_name(raw: bytes, hint: str = "") -> Tuple[str, int]:
     name = Path(hint).name if hint else ""
     if not name or "." not in name:
         name = f"media_{int(time.time())}.{suffix or 'bin'}"
-    if len(name) > MEDIA_NAME_LIMIT:
-        ext = name.rsplit(".", 1)[-1]
-        name = f"{name[: MEDIA_NAME_LIMIT - len(ext) - 1]}.{ext}"
-    return name, kind
+    return _clip_media_name(name), kind
 
 
 async def file_bytes(payload: str) -> Optional[bytes]:
@@ -700,11 +728,6 @@ class QQSender:
         if raw is None:
             logger.warning(f"[QQBotUID] 取不到媒体内容，跳过上传: {media_data[:64]}")
             return None
-        if len(raw) > MEDIA_DIRECT_LIMIT:
-            logger.warning(
-                f"[QQBotUID] 富媒体 {_kb(len(raw))} 超过直传上限 10MB，暂不支持分片上传，已跳过"
-            )
-            return None
         name, _ = media_file_name(raw, file_name)
         suffix, _ = media_meta(raw)
         if file_type == FILE_TYPE_AUDIO and suffix not in AUDIO_DIRECT_SUFFIXES:
@@ -713,6 +736,8 @@ class QQSender:
                 return None
             raw = converted
             name = f"voice_{int(time.time())}.silk"
+        if len(raw) > MEDIA_DIRECT_LIMIT:
+            return await self.upload_chunked(target_type, target_id, raw, file_type, name)
         return await self._upload_json(
             endpoint,
             {
@@ -745,18 +770,123 @@ class QQSender:
         if raw is None:
             logger.warning(f"[QQBotUID] 取不到文件内容，跳过发送: {name or payload[:64]}")
             return None
+        name = _clip_media_name(name or "file")
+        if len(raw) > MEDIA_DIRECT_LIMIT:
+            file_info = await self.upload_chunked(target_type, target_id, raw, FILE_TYPE_FILE, name)
+            if file_info:
+                logger.info(f"[QQBotUID] 文件上传成功: {name} {_kb(len(raw))}")
+            return file_info
         file_info = await self._upload_json(
             endpoint,
             {
                 "srv_send_msg": False,
                 "file_type": FILE_TYPE_FILE,
-                "file_name": name or "file",
+                "file_name": name,
                 "file_data": base64.b64encode(raw).decode(),
             },
         )
         if file_info:
-            logger.info(f"[QQBotUID] 文件上传成功: {name or 'file'} {_kb(len(raw))}")
+            logger.info(f"[QQBotUID] 文件上传成功: {name} {_kb(len(raw))}")
         return file_info
+
+    async def upload_chunked(
+        self,
+        target_type: str,
+        target_id: str,
+        raw: bytes,
+        file_type: int = FILE_TYPE_FILE,
+        file_name: str = "",
+    ) -> Optional[str]:
+        """超过直传上限走分片：prepare → 并发 PUT → 串行 finish → files 收尾。"""
+        base = _chunk_base(target_type, target_id)
+        size = len(raw)
+        if not base:
+            logger.warning(f"[QQBotUID] {target_type or '未知'} 没有分片上传接口，{_kb(size)} 已跳过")
+            return None
+        limit = MEDIA_SIZE_LIMITS.get(file_type, MEDIA_SIZE_LIMITS[FILE_TYPE_FILE])
+        if size > limit:
+            logger.warning(f"[QQBotUID] 文件 {_kb(size)} 超过平台上限 {_kb(limit)}，已跳过")
+            return None
+        md5 = hashlib.md5(raw).hexdigest()
+        status, prepared = await _post_json(
+            self.tm,
+            f"{base}/upload_prepare",
+            {
+                "file_type": file_type,
+                "file_name": _clip_media_name(file_name or f"file_{int(time.time())}.bin"),
+                "file_size": size,
+                "md5": md5,
+                "sha1": hashlib.sha1(raw).hexdigest(),
+                "md5_10m": hashlib.md5(raw[:CHUNK_MD5_PREFIX]).hexdigest() if size > CHUNK_MD5_PREFIX else md5,
+            },
+        )
+        if not 200 <= status < 300:
+            logger.warning(f"[QQBotUID] 分片上传申请失败: HTTP {status} {brief_text(prepared)}")
+            return None
+        upload_id = str(prepared.get("upload_id") or "")
+        parts = prepared.get("parts") if isinstance(prepared.get("parts"), list) else []
+        block_size = int(prepared.get("block_size") or 0) or 1024 * 1024
+        if not upload_id or not parts:
+            logger.warning(f"[QQBotUID] 分片上传申请没给出 upload_id / parts: {brief_text(prepared)}")
+            return None
+        blocks: List[Tuple[int, bytes, str]] = []
+        for i, part in enumerate(parts):
+            if not isinstance(part, dict):
+                continue
+            index = int(part.get("index") or (i + 1))
+            chunk = raw[(index - 1) * block_size : index * block_size]
+            url = str(part.get("presigned_url") or "")
+            if url and chunk:
+                blocks.append((index, chunk, url))
+        if not blocks:
+            logger.warning(f"[QQBotUID] 分片上传没有可用分片: upload_id={upload_id}")
+            return None
+        logger.info(f"[QQBotUID] 分片上传 {_kb(size)}: {len(blocks)} 片 upload_id={upload_id}")
+        if not await self._put_parts(blocks):
+            return None
+        for index, chunk, _ in blocks:
+            ok, data = await self.post_json(
+                f"{base}/upload_part_finish",
+                {
+                    "upload_id": upload_id,
+                    "part_index": index,
+                    "block_size": len(chunk),
+                    "md5": hashlib.md5(chunk).hexdigest(),
+                },
+            )
+            if not ok:
+                logger.warning(f"[QQBotUID] 分片 {index} 确认失败: {brief_text(data)}")
+                return None
+        return await self._complete_upload(base, upload_id)
+
+    async def _put_parts(self, blocks: List[Tuple[int, bytes, str]]) -> bool:
+        limit = asyncio.Semaphore(CHUNK_CONCURRENCY)
+
+        async def _put(client: httpx.AsyncClient, index: int, chunk: bytes, url: str) -> bool:
+            async with limit:
+                try:
+                    resp = await client.put(url, content=chunk)
+                except httpx.HTTPError as e:
+                    logger.warning(f"[QQBotUID] 分片 {index} 直传失败: {e}")
+                    return False
+            if 200 <= resp.status_code < 300:
+                return True
+            logger.warning(f"[QQBotUID] 分片 {index} 直传失败: HTTP {resp.status_code} {brief_text(resp.text)}")
+            return False
+
+        async with httpx.AsyncClient(timeout=CHUNK_PUT_TIMEOUT) as client:
+            results = await asyncio.gather(*(_put(client, *block) for block in blocks))
+        return all(results)
+
+    async def _complete_upload(self, base: str, upload_id: str) -> Optional[str]:
+        for attempt in range(CHUNK_FINISH_RETRY + 1):
+            file_info = await self._upload_json(f"{base}/files", {"upload_id": upload_id})
+            if file_info:
+                logger.info(f"[QQBotUID] 分片上传完成: upload_id={upload_id}")
+                return file_info
+            if attempt < CHUNK_FINISH_RETRY:
+                await asyncio.sleep(2 * (attempt + 1))
+        return None
 
     async def _upload_json(self, endpoint: str, payload: Dict[str, Any]) -> Optional[str]:
         logger.debug(f"[QQBotUID] 富媒体 POST {endpoint} {brief_text(payload)}")
