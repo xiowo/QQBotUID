@@ -56,6 +56,7 @@ from .convert import (
     is_bot_message,
     recall_endpoint,
     event_to_receive,
+    event_openid_pair,
     fallback_nickname,
     normalize_buttons,
     interaction_ack_id,
@@ -66,6 +67,7 @@ from .webhook import WebhookServer, shared_server
 from .proactive import PassiveWindow, ProactiveDispatcher
 from .user_info import UserRecorder, ensure_table as ensure_user_table
 from .group_info import ensure_table as ensure_group_table
+from .union_info import UnionRecorder, ensure_table as ensure_union_table
 from .core_bridge import CoreBridge
 
 OP_DISPATCH = 0
@@ -504,6 +506,7 @@ class QQBotUID:
         self.proactive = ProactiveDispatcher()
         self.passive = PassiveWindow()
         self.users = UserRecorder()
+        self.unions = UnionRecorder()
         self._tasks: List[asyncio.Task[Any]] = []
         self._webhook: Optional[WebhookServer] = None
         self._ws = None
@@ -529,6 +532,7 @@ class QQBotUID:
         patch_image_fallback()
         await ensure_group_table()
         await ensure_user_table()
+        await ensure_union_table()
         self.bridge.add_target(self)
         try:
             if self.config.mode == "wh":
@@ -708,6 +712,7 @@ class QQBotUID:
                 return
             self._warn_unresolved_reference(payload, receive)
             self.passive.mark(receive.msg_id)
+            self._record_union_openid(payload)
             self.users.observe(receive)
             await self.maybe_input_notify(receive)
             if await self.maintenance_reply(receive):
@@ -735,6 +740,11 @@ class QQBotUID:
             return
         if not ok:
             logger.debug(t("[QQBotUID] 按钮回调回应未成功: {id}", id=interaction_id))
+
+    def _record_union_openid(self, payload: Dict[str, Any]) -> None:
+        """记 openid ↔ union_openid，事件里没有 union_openid 就直接跳过。"""
+        user_openid, union_openid = event_openid_pair(payload)
+        self.unions.observe(self.config.platform_bot_id, user_openid, union_openid)
 
     def _skip_other_bot(self, payload: Dict[str, Any]) -> bool:
         """开了「忽略其他机器人消息」时，别的 bot 发的消息不进核心。"""
@@ -837,6 +847,7 @@ class QQBotUID:
             )
             if not self._skip_other_bot(body):
                 self.passive.mark(receive.msg_id)
+                self._record_union_openid(body)
                 self.users.observe(receive)
                 await self.maybe_input_notify(receive)
                 if not await self.maintenance_reply(receive):

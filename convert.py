@@ -592,6 +592,26 @@ def _strip_appid_prefix(user_id: str) -> str:
     return user_id.split(":", 1)[1] if ":" in user_id else user_id
 
 
+def event_openid_pair(payload: Dict[str, Any]) -> Tuple[str, str]:
+    """原始事件里的 (user_openid, union_openid)"""
+    d = payload.get("d")
+    if not isinstance(d, dict):
+        return "", ""
+    if str(payload.get("t") or "") == INTERACTION_EVENT:
+        raw_data = d.get("data")
+        data = raw_data if isinstance(raw_data, dict) else {}
+        raw_resolved = data.get("resolved")
+        resolved = raw_resolved if isinstance(raw_resolved, dict) else {}
+        user_id = str(d.get("group_member_openid") or d.get("user_openid") or resolved.get("user_id") or "")
+        return _strip_appid_prefix(user_id), str(resolved.get("union_openid") or "").strip()
+    raw_author = d.get("author")
+    author = raw_author if isinstance(raw_author, dict) else {}
+    union_openid = str(author.get("union_openid") or "").strip()
+    if not union_openid:
+        return "", ""
+    return _event_user_id(d), union_openid
+
+
 def _interaction_to_receive(
     payload: Dict[str, Any],
     bot_id: str,

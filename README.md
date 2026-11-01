@@ -259,6 +259,48 @@ pip install pilk
 
 **探测结果在进程内缓存**，装好 ffmpeg 后要重启核心（独立进程模式下等 daemon 自己重载）才会重新识别。
 
+## 🆔 openid 与 union_openid 映射
+
+插件把「入站事件里同时出现的 openid + union_openid」记到 `QQBotUID_Union_OpenID`，用来把同一主体下机器人下的 id 串起来。
+
+| 表 | 一行是什么 | 什么时候写 |
+| :--- | :--- | :--- |
+| `QQBotUID_Union_OpenID` | 一个 openid 对应的 union_openid | 收到事件时，**只有事件里带了 union_openid 才写** |
+
+列是 `bot_id`、`user_openid`、`union_openid`，唯一约束在 `(bot_id, user_openid)` 上：一个 openid 只对应一个 union_openid，同一个人多个 openid 就是多行。
+
+| 事件 | 有没有 union_openid | 结果 |
+| :--- | :--- | :--- |
+| 群消息 `GROUP_AT_MESSAGE_CREATE` / `GROUP_MESSAGE_CREATE` | 有 | 记 `member_openid` |
+| 私聊 `C2C_MESSAGE_CREATE` | 有 | 记 `user_openid` |
+| 频道消息、`FRIEND_ADD`、按钮回调 `INTERACTION_CREATE` | 没有 | 跳过，不入库 |
+
+同一份对应关系只会落库一次（进程内记缓存），union_openid 变了才会覆盖。
+
+### 调用方式
+
+```python
+from gsuid_core.plugins.QQBotUID.union_info import (
+    record,
+    get_union_openid,
+    get_user_openids,
+    get_union_openid_map,
+)
+
+# 手动补一条（一般不用，入站事件会自动记）
+await record(bot_id, user_openid, union_openid)
+
+# openid → union_openid，没记过返回空串
+union_openid = await get_union_openid(bot_id, user_openid)
+
+# union_openid → 这个人出现过的全部 openid（群一条、私聊一条）
+openids = await get_user_openids(bot_id, union_openid)
+
+# 批量转，没记过的 openid 不会出现在结果里
+mapping = await get_union_openid_map(bot_id, ["9E5C1F3A...", "B41D77C0..."])
+```
+
+
 ## 🔗 分享链接与回调
 
 生成一条「加机器人好友」的分享链接，用户通过它加好友时，你生成时传的 `callback_data` 会原样回到好友添加事件里 —— 用来区分渠道、邀请码、绑定关系。

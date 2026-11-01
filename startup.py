@@ -15,6 +15,7 @@ from .commands import write_snapshot as write_command_snapshot
 from .user_info import ensure_table as ensure_user_table
 from .group_info import ensure_table as ensure_group_table
 from .supervisor import DaemonSupervisor
+from .union_info import ensure_table as ensure_union_table
 from .core_bridge import CoreBridge
 
 _RUNTIME_SLOT = "_qqbotuid_runtime"
@@ -109,6 +110,7 @@ class _Runtime:
             )
         await ensure_group_table()
         await ensure_user_table()
+        await ensure_union_table()
         if base.daemon_mode:
             if not base.enabled:
                 await self.supervisor.reap()
