@@ -47,7 +47,7 @@ from .qq_api import (
     patch_image_fallback,
     cancel_group_refreshes,
 )
-from .ws_api import ACTIVE_TEST, ADMIN_REQUEST, SHARE_LINK_REQUEST, handle_control
+from .ws_api import ACTIVE_TEST, ADMIN_REQUEST, SHARE_LINK_REQUEST
 from .convert import (
     at_tag,
     send_endpoint,
@@ -905,9 +905,6 @@ class QQBotUID:
         if send.bot_id not in {self.config.platform_bot_id, self.config.route_bot_id}:
             logger.debug(t("[QQBotUID] 忽略非官机平台下发消息: bot_id={bot_id}", bot_id=send.bot_id))
             return None
-        control = await handle_control(first.type, first.data, self.config.platform_bot_id)
-        if control is not None:
-            return control
         if first.type == ACTIVE_TEST:
             return await self.active_test_reply(send, first.data)
         if first.type == ADMIN_REQUEST:

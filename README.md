@@ -164,7 +164,11 @@
 
 ### 调用方式
 
-控制帧沿插件与核心之间那条 ws 走：核心下发一帧 `MessageSend`，插件查完把结果塞进 `recall_message_id` 回执的 `id` 字段返回，不经过 HTTP、不占端口。
+```python
+from gsuid_core.plugins.QQBotUID.user_info import QQBotUIDUser
+
+member_ids = await QQBotUIDUser.list_members("qqgroup", group_openid)
+```
 
 ```python
 import json
@@ -172,8 +176,8 @@ from gsuid_core.models import Message
 
 receipts = await bot.send(
     Message(
-        type="gscore_group_members_request",
-        data={"request_id": "req-1", "group_id": "1A790910D2..."},
+        type="gscore_qqbot_active_test",
+        data={"target_type": "group", "target_id": "1A790910D2...", "bot_self_id": "..."},
     ),
     wait_recall=True,
 )
@@ -182,31 +186,26 @@ payload = json.loads(receipts[0]) if receipts else {}
 
 | 帧 `type` | `data` 参数 | 回执内容 |
 | :--- | :--- | :--- |
-| `gscore_group_members_request` | `request_id`、`group_id`（或 `group_openid`）、`bot_id` | `group_openid` + `count` + `member_ids` |
 | `gscore_qqbot_active_test` | `target_type`（`group` / `direct`）、`target_id`、`bot_self_id` | `ok` + `message_id` + `error` |
 | `gscore_qqbot_admin_request` | `request_id`、`action`，其余参数随 action | `request_id` + `action` + `ok` + `data` / `error` |
 | `gscore_qqbot_share_link_request` | `request_id`、`callback_data`（可选） | `request_id` + `ok` + `data`（`url` + `callback_data`）/ `error` |
 
-
-
-回执长这样，`request_id` 原样带回，用来对账：
+回执长这样（`gscore_qqbot_active_test` 没有 `request_id`）：
 
 ```json
 {
-  "request_id": "req-1",
   "ok": true,
-  "group_openid": "1A790910D2...",
-  "count": 2,
-  "member_ids": ["9E5C1F3A4B2D...", "B41D77C0E19A..."]
+  "message_id": "ROBOT1.0_xxx",
+  "error": ""
 }
 ```
 
 几个必须注意的点：
 
 - **`wait_recall=True` 不能省。** 不带它核心不会登记等待，`receipts` 永远是 `None`。
-- **`request_id` 必填。** 缺了会回 `{"ok": false, "error": "missing request_id"}`，不会去查库。
-- **等待上限 10 秒**（核心 `RECALL_WAIT_TIMEOUT`），超时 `receipts` 为空列表。查库是本地 SQLite，正常毫秒级。
-- **别把这条连接的回执能力打坏。** 核心对「连续 3 次整轮零回执」的连接会关掉 recall，之后撤回和查询都拿不到回执。插件这边每帧都会回执（查库异常也转成 `ok: false`），但如果你在别处乱发 `wait_recall` 请求，要留意这个计数。
+- **`request_id` 必填**（`gscore_qqbot_active_test` 除外）。缺了会回 `{"ok": false, "error": "missing request_id"}`，不会去请求平台。
+- **等待上限 10 秒**（核心 `RECALL_WAIT_TIMEOUT`），超时 `receipts` 为空列表。这几帧都要请求平台，正常几百毫秒内返回。
+- **别把这条连接的回执能力打坏。** 核心对「连续 3 次整轮零回执」的连接会关掉 recall，之后撤回和查询都拿不到回执。插件这边每帧都会回执，但如果你在别处乱发 `wait_recall` 请求，要留意这个计数。
 
 ### 主动消息权限测试
 
@@ -337,7 +336,7 @@ url = payload["data"]["url"]
 - `callback_data` **最长 32 字符**，超了直接回错，不会去请求平台。
 - 不传就自动生成一个 32 位 hex（`uuid4().hex`），回执里带回来方便你存。
 - 同一个 `callback_data` 可以重复用，平台不校验唯一性。
-- **这条帧也在 `runner` 里处理，不在 `ws_api`** —— 它要 `sender` 去请求平台，`ws_api.CONTROL_TYPES` 里没有登记它。
+- **这条帧在 `runner` 里处理** —— 它要 `sender` 去请求平台，`ws_api` 里只放帧名常量。
 
 ### 收回调
 
@@ -371,7 +370,7 @@ url = payload["data"]["url"]
 
 ## 👮 群管与菜单接口
 
-和群成员列表一样，走一条控制帧 `gscore_qqbot_admin_request`：核心发帧，插件代调官方 API，结果原样回执。
+走一条控制帧 `gscore_qqbot_admin_request`：核心发帧，插件代调官方 API，结果原样回执。
 
 ```python
 import json
@@ -431,7 +430,7 @@ if payload.get("ok"):
 - **`request_id` 必填。** 缺了回 `{"ok": false, "error": "missing request_id"}`，不会去调平台。
 - **未知 `action` 回 `ok: false`**，并在日志里打一条 `未知的群管 action`。
 - **`seconds` 只认秒数**（`int` 或纯数字字符串），和核心 `bot.ban()` 的 `duration` 同一套解析；写 `"10m"` 这种会被判为参数不完整。
-- **这条帧在 `runner` 里处理，不在 `ws_api`。** 它和 `gscore_qqbot_active_test` 一样需要 `sender`，`ws_api.CONTROL_TYPES` 里没有登记它。
+- **这条帧在 `runner` 里处理。** 它和 `gscore_qqbot_active_test` 一样需要 `sender`，`ws_api` 里只放帧名常量。
 
 
 ## 🧩 独立进程模式
