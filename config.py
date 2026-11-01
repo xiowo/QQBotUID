@@ -141,6 +141,12 @@ ADVANCED_CONFIG_DEFAULT: dict[str, GSC] = {
         ),
         data=False,
     ),
+    "stream_max_chars": GsIntConfig(
+        title="流式字数上限",
+        desc="回复不超过这么多字符才走流式，超了就一次性普通发送。长文本流式请求次数多、反而更慢。填 0 表示不限制。",
+        data=0,
+        max_value=10000,
+    ),
     "stream_chunk_size": GsIntConfig(
         title="流式分片字符数",
         desc="每次下发的字符数，越小越像打字机，但请求次数也越多。内容比这个值短时会自动对半分，保证至少两片。",
@@ -260,6 +266,7 @@ class StreamSetting:
 
     chunk_size: int
     delay_ms: int
+    max_chars: int
 
 
 def stream_setting() -> Optional[StreamSetting]:
@@ -269,6 +276,7 @@ def stream_setting() -> Optional[StreamSetting]:
     return StreamSetting(
         chunk_size=max(_cfg_int(advanced_config, "stream_chunk_size", 200), 1),
         delay_ms=max(_cfg_int(advanced_config, "stream_delay_ms", 100), 0),
+        max_chars=max(_cfg_int(advanced_config, "stream_max_chars", 0), 0),
     )
 
 

@@ -948,6 +948,11 @@ class QQBotUID:
         content = await self._segments_markdown(send)
         if not content.strip():
             return None
+        if setting.max_chars and len(content) > setting.max_chars:
+            logger.debug(
+                f"[QQBotUID] 回复 {len(content)} 字超过流式字数上限 {setting.max_chars}，不走流式，直接普通发送"
+            )
+            return None
         if not any(item.type == "markdown" for item in send.content or []):
             content = _md_hard_break(content)
         chunk_size = setting.chunk_size
