@@ -974,7 +974,7 @@ class QQSender:
             index += 1
             if not done and delay_ms:
                 await asyncio.sleep(delay_ms / 1000)
-        logger.info(f"[QQBotUID] 流式下发完成 {index} 片 -> {target_id[:8]}…")
+        logger.debug(f"[QQBotUID] 流式下发完成 {index} 片 -> {target_id[:8]}…")
         return True, stream_id
 
     async def kick_group_members(
