@@ -17,6 +17,9 @@
   var detail = {
     appid: '',
   };
+  var confirmBox = {
+    onOk: null,
+  };
 
   var $ = function (id) { return document.getElementById(id); };
   function on(id, type, handler, capture) {
@@ -149,6 +152,9 @@
         '    </div>' +
         '  </div>' +
         '  <div class="bot-actions">' +
+        '    <button class="icon-action" type="button" data-action="delete" title="删除机器人" aria-label="删除机器人">' +
+        '      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4.5 7h15" /><path d="M9.5 7V4.8h5V7" /><path d="M6.6 7l.9 12.2h9L17.4 7" /><path d="M10.4 10.6v5.6" /><path d="M13.6 10.6v5.6" /></svg>' +
+        '    </button>' +
         '    <button class="settings-btn' + (expanded ? ' active' : '') + '" type="button" data-action="settings" title="连接设置" aria-label="连接设置">⚙</button>' +
         '    <label class="toggle"><input type="checkbox" data-field="enabled"' + (bot.enabled ? ' checked' : '') + ' /><i></i></label>' +
         '  </div>' +
@@ -214,11 +220,75 @@
     return true;
   }
 
+  function openConfirm(opts) {
+    $('confirmTitle').textContent = opts.title || '确认操作';
+    $('confirmSubtitle').textContent = opts.subtitle || '';
+    $('confirmSubtitle').hidden = !opts.subtitle;
+    $('confirmText').textContent = opts.text || '';
+    $('confirmHint').textContent = opts.hint || '';
+    $('confirmHint').hidden = !opts.hint;
+    $('confirmOk').textContent = opts.okText || '确定';
+    confirmBox.onOk = opts.onOk || null;
+    $('confirmModal').hidden = false;
+    document.body.classList.add('modal-open');
+    $('confirmOk').focus();
+  }
+
+  function closeConfirm() {
+    confirmBox.onOk = null;
+    $('confirmOk').disabled = false;
+    $('confirmModal').hidden = true;
+    if ($('bindModal').hidden && $('detailModal').hidden) document.body.classList.remove('modal-open');
+  }
+
+  async function runConfirm() {
+    var task = confirmBox.onOk;
+    if (!task) return;
+    var button = $('confirmOk');
+    button.disabled = true;
+    try {
+      await task();
+    } finally {
+      closeConfirm();
+    }
+  }
+
+  async function removeBot(bot, name) {
+    try {
+      var data = await api('/bots/' + encodeURIComponent(bot.appid), { method: 'DELETE' });
+      if (detail.appid === bot.appid) closeDetail();
+      state.expanded.delete(bot.appid);
+      state.bots = (data && data.bots) || [];
+      state.saved = snapshot();
+      renderBots();
+      showToast(data && data.reloaded === false ? '已删除 ' + name + '，重启核心后生效' : '已删除 ' + name);
+    } catch (err) {
+      showToast(err.message || '删除失败', true);
+    }
+  }
+
+  function deleteBot(bot) {
+    var name = bot.bot_name || bot.appid || '未命名 Bot';
+    var dirty = state.saved !== '' && snapshot() !== state.saved;
+    openConfirm({
+      title: '删除机器人',
+      subtitle: '删除后不可撤销，需要重新扫码才能加回来',
+      text: '确定要删除「' + name + '」吗？它的 AppID / Secret 和机器人资料会一起移除。',
+      hint: dirty ? '当前还有未保存的修改，删除后这些修改也会一并丢弃。' : '',
+      okText: '删除',
+      onOk: function () { return removeBot(bot, name); },
+    });
+  }
+
   on('botList', 'click', function (event) {
     var card = event.target.closest('.bot-card');
     if (!card) return;
     var bot = state.bots[Number(card.dataset.index)];
     if (handleSelectClick(event)) return;
+    if (event.target.closest('[data-action="delete"]')) {
+      if (bot) deleteBot(bot);
+      return;
+    }
     if (event.target.closest('[data-action="settings"]')) {
       var key = bot && (bot.appid || card.dataset.index);
       if (state.expanded.has(key)) state.expanded.delete(key);
@@ -434,6 +504,12 @@
   on('detailModal', 'click', function (event) {
     if (event.target.dataset.close) closeDetail();
   });
+  on('confirmOk', 'click', runConfirm);
+  on('confirmCancel', 'click', closeConfirm);
+  on('closeConfirm', 'click', closeConfirm);
+  on('confirmModal', 'click', function (event) {
+    if (event.target.dataset.close) closeConfirm();
+  });
   on('detailBody', 'error', function (event) {
     var img = event.target;
     if (img && img.tagName === 'IMG' && img.classList.contains('detail-avatar-img')) img.remove();
@@ -443,7 +519,8 @@
   });
   document.addEventListener('keydown', function (event) {
     if (event.key !== 'Escape') return;
-    if (!$('bindModal').hidden) closeBind();
+    if (!$('confirmModal').hidden) closeConfirm();
+    else if (!$('bindModal').hidden) closeBind();
     else if (!$('detailModal').hidden) closeDetail();
     else closeSelects(null);
   });

@@ -14,7 +14,7 @@ from .config import QQBotUIDConfig, display_mode
 from .qq_api import fetch_bot_profile
 from .qr_bind import poll_bind_task, create_bind_task
 from .startup import qqbotuid_runtime
-from .bots_store import BotRow, load_rows, save_rows, save_bot_profile, upsert_bound_bot
+from .bots_store import BotRow, delete_row, load_rows, save_rows, save_bot_profile, upsert_bound_bot
 
 WEB_DIR = Path(__file__).with_name("web")
 
@@ -158,6 +158,15 @@ async def qqbotuid_bot_detail(appid: str):
 @api.post("/bots")
 async def qqbotuid_save_bots(data: dict[str, Any]):
     _replace_rows([r for r in data.get("bots", []) if isinstance(r, dict)])
+    reloaded = await _reload_runtime()
+    return {"status": 0, "msg": "ok", "data": {"bots": _rows_payload(), "reloaded": reloaded}}
+
+
+@api.delete("/bots/{appid}")
+async def qqbotuid_delete_bot(appid: str):
+    """删掉一个机器人"""
+    if not delete_row(appid):
+        return {"status": 1, "msg": "机器人不存在", "data": None}
     reloaded = await _reload_runtime()
     return {"status": 0, "msg": "ok", "data": {"bots": _rows_payload(), "reloaded": reloaded}}
 

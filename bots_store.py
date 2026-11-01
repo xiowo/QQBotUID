@@ -136,5 +136,15 @@ def save_bot_profile(
     return changed
 
 
+def delete_row(appid: str) -> bool:
+    """按 appid 删掉一条机器人记录"""
+    rows = load_rows()
+    kept = [row for row in rows if row.appid != appid]
+    if len(kept) == len(rows):
+        return False
+    save_rows(kept)
+    return True
+
+
 def set_bot_name(appid: str, bot_name: str) -> None:
     save_bot_profile(appid, bot_name=bot_name)
