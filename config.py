@@ -34,7 +34,7 @@ CONFIG_DEFAULT: dict[str, GSC] = {
     "ignore_bot_message": GsBoolConfig(
         title="忽略其他机器人消息",
         desc="开启后发送者是机器人的消息直接丢弃，不交给核心处理。",
-        data=True,
+        data=False,
     ),
     "reconnect_interval": GsIntConfig(
         title="重连间隔 (ms)",
