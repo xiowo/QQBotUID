@@ -1,5 +1,5 @@
 import asyncio
-from typing import Any, Optional
+from typing import Any, Optional, Set
 
 import websockets
 from msgspec import json as msgjson
@@ -23,6 +23,7 @@ class RemoteBridge(TargetBridge):
         self._reader: Optional[asyncio.Task[None]] = None
         self._worker: Optional[asyncio.Task[None]] = None
         self._queue: asyncio.Queue = asyncio.Queue()
+        self._inflight: Set["asyncio.Task[None]"] = set()
         self._closed = False
         self._disconnects = 0
 
@@ -72,6 +73,11 @@ class RemoteBridge(TargetBridge):
                 await worker
             except asyncio.CancelledError:
                 pass
+        inflight, self._inflight = self._inflight, set()
+        for task in inflight:
+            task.cancel()
+        if inflight:
+            await asyncio.gather(*inflight, return_exceptions=True)
         self._targets.clear()
 
     async def _forever(self) -> None:
@@ -99,16 +105,23 @@ class RemoteBridge(TargetBridge):
             delay = min(delay * 2, RECONNECT_MAX)
 
     async def _drain_forever(self) -> None:
+        """取帧后直接并发下发，不等待发送完成。"""
         while True:
             raw = await self._queue.get()
             try:
-                await self._dispatch(raw)
-            except asyncio.CancelledError:
-                raise
-            except Exception as e:
-                logger.warning(f"[QQBotUID] 下发帧处理异常，已跳过: {e}")
+                task = asyncio.create_task(self._dispatch(raw))
+                self._inflight.add(task)
+                task.add_done_callback(self._on_dispatch_done)
             finally:
                 self._queue.task_done()
+
+    def _on_dispatch_done(self, task: "asyncio.Task[None]") -> None:
+        self._inflight.discard(task)
+        if task.cancelled():
+            return
+        err = task.exception()
+        if err is not None:
+            logger.warning(f"[QQBotUID] 下发帧处理异常，已跳过: {err}")
 
     async def _dispatch(self, raw: Any) -> None:
         await self._deliver(raw.encode() if isinstance(raw, str) else raw)
