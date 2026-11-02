@@ -7,7 +7,7 @@ from gsuid_core.logger import logger
 from gsuid_core.models import NODE_MARK, Message, MessageSend, MessageReceive, format_node_preview
 
 _AT_PATTERN = re.compile(r"<@!?[A-Za-z0-9_\-]+>")
-_FACE_PATTERN = re.compile(r'<faceType=\d+,faceId="([^"]+)",ext="[^"]*">')
+_FACE_PATTERN = re.compile(r'<faceType=\d+,faceId="[^"]*",ext="[^"]*">')
 _INLINE_ATTACHMENT_PATTERN = re.compile(
     r'<attachmentType="(?P<content_type>[^"]+)"[^>]*>\s*<(?P<url>https?://[^>\s]+)>',
     re.IGNORECASE,
@@ -81,7 +81,7 @@ def _strip_leading_command(text: str) -> str:
 def _clean_text(content: Any) -> str:
     text = "" if content is None else str(content)
     text = _strip_attachment_markers(text)
-    text = _FACE_PATTERN.sub(r"[face id=\1]", text)
+    text = _FACE_PATTERN.sub("", text)
     text = _AT_PATTERN.sub("", text)
     return html.unescape(text).strip()
 
