@@ -36,6 +36,14 @@ CONFIG_DEFAULT: dict[str, GSC] = {
         desc="开启后发送者是机器人的消息直接丢弃，不交给核心处理。",
         data=False,
     ),
+    "filter_only_at_other_bot": GsBoolConfig(
+        title="过滤纯艾特其他机器人",
+        desc=(
+            "开启后，一条消息如果只艾特了别的机器人（没艾特本机器人、也没艾特到真人），"
+            "就直接丢弃不交给核心处理，避免在别的机器人也能应答的群里被误触发。"
+        ),
+        data=False,
+    ),
     "reconnect_interval": GsIntConfig(
         title="重连间隔 (ms)",
         desc="QQ 官方 WebSocket 断开后等多少毫秒重连；0 表示断开立刻重连。",
@@ -396,6 +404,7 @@ def get_qqbotuid_configs() -> list["QQBotUIDConfig"]:
                 reconnect_interval=base.reconnect_interval,
                 client_name=base.client_name,
                 ignore_bot_message=base.ignore_bot_message,
+                filter_only_at_other_bot=base.filter_only_at_other_bot,
             )
         )
     return configs
@@ -420,6 +429,7 @@ class QQBotUIDConfig:
     reconnect_interval: int = 0
     client_name: str = "QQBotUID"
     ignore_bot_message: bool = True
+    filter_only_at_other_bot: bool = False
     daemon_mode: bool = False
     core_host: str = "127.0.0.1"
     core_port: int = 8765
@@ -468,6 +478,7 @@ class QQBotUIDConfig:
             reconnect_interval=_cfg_int(qqbotuid_config, "reconnect_interval", 0),
             client_name=_cfg_str(advanced_config, "client_name", "QQBotUID"),
             ignore_bot_message=bool(qqbotuid_config.get_config("ignore_bot_message").data),
+            filter_only_at_other_bot=bool(qqbotuid_config.get_config("filter_only_at_other_bot").data),
             daemon_mode=bool(qqbotuid_config.get_config("daemon_mode").data),
             core_host=_cfg_str(qqbotuid_config, "core_host", "127.0.0.1"),
             core_port=_cfg_int(qqbotuid_config, "core_port", 8765),

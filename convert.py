@@ -345,10 +345,23 @@ def is_bot_message(payload: Dict[str, Any]) -> bool:
     author = d.get("author")
     if not isinstance(author, dict):
         return False
-    flag = author.get("bot")
-    if isinstance(flag, bool):
-        return flag
-    return str(flag or "").strip().lower() in {"1", "true", "yes"}
+    return author.get("bot") is True
+
+
+def is_only_at_other_bot(payload: Dict[str, Any]) -> bool:
+    """整条消息只艾特了别的机器人：没艾特本机，也没艾特到真人。"""
+    d = payload.get("d")
+    if not isinstance(d, dict):
+        return False
+    mentions = d.get("mentions")
+    if not isinstance(mentions, list):
+        return False
+    items = [item for item in mentions if isinstance(item, dict)]
+    if not items:
+        return False
+    if any(item.get("is_you") is True or item.get("scope") == "all" for item in items):
+        return False
+    return all(item.get("bot") is True for item in items)
 
 
 def _reference_elements(elements: Any, reply_id: str) -> List[Dict[str, Any]]:

@@ -54,6 +54,7 @@ from .convert import (
     build_keyboard,
     event_reply_id,
     is_bot_message,
+    is_only_at_other_bot,
     recall_endpoint,
     event_to_receive,
     event_openid_pair,
@@ -708,7 +709,7 @@ class QQBotUID:
             logger.debug(
                 t("[QQBotUID] WS 事件 {event_type}: {raw}", event_type=event_type, raw=brief_text(payload, 1500))
             )
-            if self._skip_other_bot(payload):
+            if self._skip_filtered(payload):
                 return
             self._warn_unresolved_reference(payload, receive)
             self.passive.mark(receive.msg_id)
@@ -746,12 +747,15 @@ class QQBotUID:
         user_openid, union_openid = event_openid_pair(payload)
         self.unions.observe(self.config.platform_bot_id, user_openid, union_openid)
 
-    def _skip_other_bot(self, payload: Dict[str, Any]) -> bool:
-        """开了「忽略其他机器人消息」时，别的 bot 发的消息不进核心。"""
-        if not self.config.ignore_bot_message or not is_bot_message(payload):
-            return False
-        logger.debug(t("[QQBotUID] 已忽略其他机器人消息: {event}", event=str(payload.get("t") or "")))
-        return True
+    def _skip_filtered(self, payload: Dict[str, Any]) -> bool:
+        """入站过滤：别的 bot 发的消息、只艾特别家机器人的消息，不进核心。"""
+        if self.config.ignore_bot_message and is_bot_message(payload):
+            logger.debug(t("[QQBotUID] 已忽略其他机器人消息: {event}", event=str(payload.get("t") or "")))
+            return True
+        if self.config.filter_only_at_other_bot and is_only_at_other_bot(payload):
+            logger.debug(t("[QQBotUID] 已过滤纯艾特其他机器人消息: {event}", event=str(payload.get("t") or "")))
+            return True
+        return False
 
     def _warn_unresolved_reference(self, payload: Dict[str, Any], receive: MessageReceive) -> None:
         if any(item.type == "reply_id" for item in receive.content):
@@ -845,7 +849,7 @@ class QQBotUID:
             logger.debug(
                 t("[QQBotUID] Webhook 事件 {event_type}: {raw}", event_type=body.get("t"), raw=brief_text(body, 1500))
             )
-            if not self._skip_other_bot(body):
+            if not self._skip_filtered(body):
                 self.passive.mark(receive.msg_id)
                 self._record_union_openid(body)
                 self.users.observe(receive)
