@@ -1272,13 +1272,14 @@ class QQBotUID:
             broken = _BROKEN_IMAGE_DATA_PATTERN.search(target)
             if broken is not None:
                 image_data = broken.group("data")
+            elif public_image_url(target):
+                image_data = target
             else:
                 local_path = _local_image_path(target)
                 if not local_path:
                     continue
                 image_data = f"file://{local_path}"
             alt = content[start + 2 : alt_end] or "图片"
-            # alt 里的 `#宽px #高px` 保留，核心没给就用图片本身算出来的
             material = await self.material_image(image_data, _alt_size(alt))
             parts.append(content[cursor:start])
             if material is not None:
