@@ -10,6 +10,7 @@ from qrcode.image.pil import PilImage
 from gsuid_core.logger import logger
 from gsuid_core.webconsole.plugin_page import PluginAPI, register_plugin_page
 
+from . import command_panel_api
 from .config import QQBotUIDConfig, display_mode
 from .qq_api import fetch_bot_profile
 from .qr_bind import poll_bind_task, create_bind_task
@@ -43,6 +44,7 @@ register_plugin_page(
 )
 
 api = PluginAPI()
+command_panel_api.register_routes(api)
 
 
 def _rows_payload() -> list[dict[str, Any]]:
@@ -178,6 +180,7 @@ async def qqbotuid_bind_create():
 
 
 async def _reload_runtime() -> bool:
+    await command_panel_api.prune_panel_clients()
     try:
         await qqbotuid_runtime.restart()
     except Exception as e:

@@ -4,6 +4,8 @@
   var SDK = window.GsHubPlugin;
   var API_BASE = '/api/qqbotuid';
   var POLL_INTERVAL_MS = 2000;
+  var panelController;
+  var activePage = 'bots';
   var state = {
     bots: [],
     saved: '',
@@ -88,7 +90,7 @@
 
   function updateDirty() {
     var dirty = state.saved !== '' && snapshot() !== state.saved;
-    saveDock.classList.toggle('hidden', !dirty);
+    saveDock.classList.toggle('hidden', !dirty || activePage !== 'bots');
   }
 
   function renderCount() {
@@ -121,6 +123,10 @@
   }
 
   function renderBots() {
+    if (panelController) {
+      panelController.setBots(state.bots);
+      if (activePage === 'panels') panelController.open();
+    }
     if (!state.bots.length) {
       botList.innerHTML = '<div class="empty">还没有 Bot。点右上角「扫码添加」用手机 QQ 授权，'
         + '扫完自动写入 AppID / Secret 并接入核心。</div>';
@@ -524,6 +530,32 @@
     else if (!$('detailModal').hidden) closeDetail();
     else closeSelects(null);
   });
+
+  panelController = window.QQBotPanels({ api: api, toast: showToast, confirm: openConfirm });
+
+  function switchPage(page) {
+    if (panelController.busy()) {
+      showToast('指令面板请求尚未结束，请稍候');
+      return;
+    }
+    activePage = page;
+    ['bots', 'panels'].forEach(function (name) {
+      $('page-' + name).classList.toggle('active', name === page);
+      var nav = $(name === 'bots' ? 'navBots' : 'navPanels');
+      nav.classList.toggle('active', name === page);
+      if (name === page) nav.setAttribute('aria-current', 'page');
+      else nav.removeAttribute('aria-current');
+    });
+    var isPanel = page === 'panels';
+    document.querySelector('.inner').classList.toggle('panel-wide', isPanel);
+    document.querySelector('.top-actions').hidden = isPanel;
+    $('pageTitle').textContent = isPanel ? '指令面板' : 'Bot 管理';
+    $('pageSubtitle').textContent = isPanel ? '按机器人和场景配置 QQ 官方指令面板' : '管理接入早柚核心的 QQ 官方机器人';
+    updateDirty();
+    if (isPanel) panelController.open();
+  }
+  on('navBots', 'click', function () { switchPage('bots'); });
+  on('navPanels', 'click', function () { switchPage('panels'); });
 
   function boot() {
     load(true);

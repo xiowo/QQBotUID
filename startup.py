@@ -17,6 +17,7 @@ from .group_info import ensure_table as ensure_group_table
 from .supervisor import DaemonSupervisor
 from .union_info import ensure_table as ensure_union_table
 from .core_bridge import CoreBridge
+from .command_panel_client import PanelClientPool
 
 _RUNTIME_SLOT = "_qqbotuid_runtime"
 RUNTIME_TAG = "qqbotuid-runtime"
@@ -100,8 +101,11 @@ class _Runtime:
         self.bridge = CoreBridge(ROUTE_BOT_ID)
         self.adapters: list[QQBotUID] = []
         self.supervisor = DaemonSupervisor()
+        self.panel_clients = PanelClientPool()
 
     async def start(self) -> None:
+        if self.panel_clients.closed:
+            self.panel_clients = PanelClientPool()
         base = QQBotUIDConfig.from_config()
         if not base.daemon_mode and maintenance_rule() is not None:
             logger.warning(
@@ -136,6 +140,7 @@ class _Runtime:
                 logger.exception(t("[QQBotUID] Bot 启动失败: appid={appid}, err={err}", appid=cfg.appid, err=e))
 
     async def stop(self) -> None:
+        await self.panel_clients.aclose()
         await self.supervisor.stop()
         adapters, self.adapters = self.adapters, []
         for adapter in adapters:

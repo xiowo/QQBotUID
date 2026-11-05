@@ -8,6 +8,7 @@
     <script src="/plugin-pages/_sdk/gshub-plugin.js"></script>
     <script>
         document.write('<link rel="stylesheet" href="./app.css?v=' + Date.now() + '">');
+        document.write('<link rel="stylesheet" href="./panels.css?v=' + Date.now() + '">');
     </script>
 </head>
 
@@ -16,7 +17,7 @@
         <aside class="sidebar">
             <div class="brand"><span class="brand-icon">🦊</span><span>QQBotUID</span></div>
             <nav class="nav" aria-label="页面导航">
-                <button class="nav-item active" type="button">
+                <button id="navBots" class="nav-item active" type="button" aria-current="page">
                     <svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true">
                         <rect x="4" y="7" width="16" height="12" rx="4" />
                         <path d="M9 7V4" />
@@ -25,6 +26,15 @@
                         <path d="M15 13h.01" />
                     </svg>
                     <span>Bot 管理</span>
+                </button>
+                <button id="navPanels" class="nav-item" type="button">
+                    <svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true">
+                        <rect x="3" y="3" width="7" height="7" rx="2" />
+                        <rect x="14" y="3" width="7" height="7" rx="2" />
+                        <rect x="3" y="14" width="7" height="7" rx="2" />
+                        <rect x="14" y="14" width="7" height="7" rx="2" />
+                    </svg>
+                    <span>指令面板</span>
                 </button>
             </nav>
             <div class="sidebar-footer">
@@ -57,6 +67,69 @@
                         <div id="botList" class="bot-list">
                             <div class="empty">正在读取 Bot…</div>
                         </div>
+                    </section>
+                    <section id="page-panels" class="page" aria-label="指令面板配置">
+                        <p id="panelLimits" class="hint">配置保存在 QQ 端。每个机器人最多 20 个面板，每个面板最多 20 个元素；创建和修改限 10 次／分钟。</p>
+                        <fieldset id="panelControls" class="panel-controls">
+                            <div class="panel-toolbar">
+                                <div class="field panel-bot-field"><span id="panelBotLabel">机器人</span><div id="panelBotSelect"></div></div>
+                                <button id="panelRefresh" class="btn" type="button">刷新列表</button>
+                            </div>
+                            <div id="panelScopes" class="panel-scopes" role="group" aria-label="生效场景">
+                                <button type="button" class="btn active" data-scope="c2c" aria-pressed="true">单聊</button>
+                                <button type="button" class="btn" data-scope="group" aria-pressed="false">群聊</button>
+                                <button type="button" class="btn" data-scope="channel" aria-pressed="false">文字子频道</button>
+                                <button type="button" class="btn" data-scope="dm" aria-pressed="false">频道私信</button>
+                                <button type="button" class="btn" data-scope="menu" aria-pressed="false">全局自定义菜单</button>
+                            </div>
+                            <div id="panelWorkspace" class="panel-workspace">
+                                <aside class="panel-box panel-browser">
+                                    <div class="panel-section-head"><h2>远端面板</h2><button id="panelNew" class="btn" type="button">＋ 新建</button></div>
+                                    <div id="panelList"><div class="empty">请先选择机器人</div></div>
+                                    <button id="panelMore" class="btn panel-more" type="button" hidden>加载更多</button>
+                                </aside>
+                                <div id="panelEditor" class="panel-box">
+                                    <div class="panel-section-head"><div><h2 id="panelEditorTitle">新建面板</h2><p id="panelIdentity" class="hint"></p></div><span id="panelDirty" class="tag" hidden>未保存</span></div>
+                                    <div class="panel-form-grid">
+                                        <label class="field"><span>备注 <small id="panelRemarkCount">0 / 255</small></span><input id="panelRemark" placeholder="用于区分面板，不展示给聊天用户" autocomplete="off" /></label>
+                                        <div class="field"><span id="panelTargetLabel">作用范围</span><div id="panelTargetSelect"></div></div>
+                                    </div>
+                                    <label id="panelCreateTargets" class="field panel-target-field" hidden><span id="panelCreateTargetsLabel">用户 OpenID</span><textarea id="panelTargetIds" rows="3" placeholder="每行一个，或用逗号分隔，最多 20 个"></textarea><small>填写 OpenID，不是 QQ 号或群号。已有面板的场景和作用范围不能修改。</small></label>
+                                    <div class="panel-section-head panel-items-head"><h3>面板元素 <small id="panelItemCount">0 / 20</small></h3><div class="panel-actions"><button id="panelCopyToggle" class="btn" type="button" aria-expanded="false">从其他面板复制</button><button id="panelAddItem" class="btn" type="button">＋ 添加元素</button></div></div>
+                                    <div id="panelCopyBox" class="panel-copy" hidden>
+                                        <div class="panel-form-grid"><div class="field"><span id="panelCopyScopeLabel">来源场景</span><div id="panelCopyScopeSelect"></div></div><button id="panelCopyLoad" class="btn" type="button">查询来源面板</button></div>
+                                        <div id="panelCopyList" class="panel-copy-list"></div>
+                                        <p class="hint">只替换当前元素，不改变备注、作用范围和关联对象；保存后才提交到 QQ。</p>
+                                    </div>
+                                    <p class="hint">名称最多 15 字符，描述最多 30 字符，非 ASCII 字符计 2 个。拖动手柄或用上下按钮排序。</p>
+                                    <div id="panelItems" class="panel-items"></div>
+                                    <div class="panel-save-row"><button id="panelDelete" class="btn danger" type="button" hidden>删除面板</button><button id="panelSave" class="btn primary" type="button">保存到 QQ</button></div>
+                                    <section id="panelTargetsManager" class="panel-target-manager" hidden>
+                                        <h3>关联对象</h3><p class="hint">这里单独提交，不会保存上面的元素修改。</p>
+                                        <p class="field">QQ 接口返回的关联对象</p><pre id="panelCurrentTargets" class="panel-current-targets"></pre>
+                                        <label class="field"><span id="panelManageTargetsLabel">本次操作的用户 OpenID</span><textarea id="panelManageIds" rows="3" placeholder="每行一个，或用逗号分隔，最多 20 个"></textarea></label>
+                                        <div class="panel-actions"><button id="panelTargetAdd" class="btn" type="button">添加关联</button><button id="panelTargetRemove" class="btn danger" type="button">移除关联</button></div>
+                                    </section>
+                                </div>
+                            </div>
+                            <section id="globalMenuEditor" class="panel-box menu-editor" hidden>
+                                <div class="panel-section-head">
+                                    <div><h2>全局自定义菜单</h2><p class="hint">每个机器人一份菜单，不区分上面的聊天场景。保存会替换 QQ 端整份菜单。</p></div>
+                                    <span id="menuDirty" class="tag" hidden>未保存</span>
+                                </div>
+                                <p class="hint">最多 10 个一级菜单，每个折叠菜单最多 5 个子项。一级名称最多 10 字符，子项名称最多 14 字符；这里汉字计 1 个字符。</p>
+                                <fieldset id="menuFields" class="panel-controls" disabled>
+                                    <div class="panel-section-head">
+                                        <h3>菜单项 <small id="menuCount">0 / 10</small></h3>
+                                        <div class="panel-actions"><button id="menuClear" class="btn danger" type="button">清空编辑器</button><button id="menuAdd" class="btn" type="button">＋ 添加菜单项</button></div>
+                                    </div>
+                                    <p id="menuEmpty" class="empty">请先读取 QQ 端菜单。</p>
+                                    <div id="menuItems" class="menu-list"></div>
+                                    <p class="hint menu-sort-hint">拖动手柄或用上下按钮调整同级顺序。清空编辑器不会立即删除菜单，保存空菜单并确认后才会从 QQ 移除。</p>
+                                    <div class="panel-save-row"><button id="menuSave" class="btn primary" type="button">保存菜单到 QQ</button></div>
+                                </fieldset>
+                            </section>
+                        </fieldset>
                     </section>
                 </div>
             </section>
@@ -131,6 +204,8 @@
             type="button">保存变更</button></div>
     <div id="toast" class="toast" role="status"></div>
     <script>
+        document.write('<script src="./menu.js?v=' + Date.now() + '"><\/script>');
+        document.write('<script src="./panels.js?v=' + Date.now() + '"><\/script>');
         document.write('<script src="./app.js?v=' + Date.now() + '"><\/script>');
     </script>
 </body>
