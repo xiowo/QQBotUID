@@ -40,6 +40,10 @@
 .panel-admin { justify-content: flex-end; margin-top: 12px; font-size: 12px; color: var(--qb-muted); }
 .panel-save-row { justify-content: flex-end; padding-top: 20px; }
 .panel-save-row .danger { margin-right: auto; }
+#page-panels { padding-bottom: calc(80px + env(safe-area-inset-bottom, 0px)); }
+.panel-save-dock { max-width: calc(100% - 32px); bottom: calc(24px + env(safe-area-inset-bottom, 0px)); }
+.panel-save-dock > span { min-width: 0; }
+.panel-save-dock > .btn { flex-shrink: 0; }
 .panel-copy { padding: 14px; margin-bottom: 12px; border: 1px solid var(--qb-line); border-radius: 8px; background: var(--qb-surface-soft); }
 .panel-copy .panel-form-grid { align-items: end; }
 .panel-copy-list { display: flex; flex-wrap: wrap; gap: 8px; margin: 12px 0; }
@@ -65,7 +69,13 @@
 .menu-type { width: 150px; }
 .menu-name > span, .menu-value > span { display: flex; justify-content: space-between; gap: 10px; }
 .menu-value { margin-top: 12px; }
-.menu-children { margin-top: 16px; padding-top: 16px; border-top: 1px dashed var(--qb-line); }
+.menu-row { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 2fr); gap: 12px 14px; align-items: start; }
+.menu-row > .panel-item-head { grid-column: 1 / -1; margin-bottom: 0; }
+.menu-row > .field, .menu-row > [data-menu-section] { min-width: 0; }
+.menu-row > .menu-value, .menu-row > [data-menu-section="switch"] > .menu-value { margin-top: 0; }
+.menu-row textarea { height: 36px; min-height: 36px; padding-block: 7px; }
+.menu-folder > .menu-name, .menu-children { grid-column: 1 / -1; }
+.menu-children { margin-top: 4px; padding-top: 16px; border-top: 1px dashed var(--qb-line); }
 .menu-subrow { background: var(--qb-surface); }
 .menu-sort-hint { margin-top: 18px; }
 @media (max-width: 1100px) {
@@ -75,12 +85,14 @@
     .panel-more { margin-top: 12px; }
 }
 @media (max-width: 900px) {
+    .panel-save-dock { bottom: calc(16px + env(safe-area-inset-bottom, 0px)); }
     .sidebar { display: block; border-right: 0; border-bottom: 1px solid var(--qb-line); }
     .sidebar .brand, .sidebar .sidebar-footer { display: none; }
     .sidebar .nav { display: flex; gap: 8px; padding: 10px 16px; }
     .sidebar .nav-item { width: auto; flex: 1; justify-content: center; }
 }
 @media (max-width: 600px) {
+    .menu-row { grid-template-columns: minmax(0, 1fr); }
     .panel-form-grid { grid-template-columns: minmax(0, 1fr); }
     .panel-box { padding: 14px; }
     .panel-item { padding: 12px; }

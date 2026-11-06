@@ -20,7 +20,7 @@
     function readRow(row, validate) {
       var sub = row.dataset.sub === 'true';
       var type = row.querySelector('.menu-type').dataset.value;
-      var item = { type: type, name: text(field(row, 'name').value, sub ? 14 : 10, sub ? '子菜单名称' : '一级菜单名称', validate) };
+      var item = { type: type, name: text(field(row, 'name').value, sub ? 14 : 10, '名称', validate) };
       if (type === 'send_message') item.send_message = text(field(row, 'send_message').value, 2000, '发送内容', validate);
       if (type === 'link') {
         item.link = text(field(row, 'link').value, 2048, '菜单链接', validate);
@@ -67,7 +67,9 @@
       $('menuCount').textContent = root.children.length + ' / 10';
       $('menuAdd').disabled = root.children.length >= 10;
       $('menuClear').disabled = !root.children.length;
-      $('menuDirty').hidden = !dirty();
+      var hasChanges = dirty();
+      $('menuDirty').hidden = !hasChanges;
+      $('menuSaveDock').hidden = !hasChanges;
       $('menuEmpty').hidden = Boolean(root.children.length);
       $('menuEmpty').textContent = loaded ? '暂无全局自定义菜单。点击「添加菜单项」开始配置。' : '请先读取 QQ 端菜单。';
     }
@@ -77,8 +79,8 @@
       row.className = 'panel-item menu-row' + (sub ? ' menu-subrow' : '');
       row.dataset.sub = String(Boolean(sub));
       row.innerHTML = '<div class="panel-item-head"><div class="panel-actions"><button class="panel-drag menu-drag" type="button" draggable="true" aria-label="拖动菜单排序" title="拖动同级排序">⠿</button><span class="panel-item-number menu-number"></span><div class="menu-type"></div></div><div class="panel-actions"><button class="icon-action" data-menu-action="up" type="button" title="上移" aria-label="上移菜单">↑</button><button class="icon-action" data-menu-action="down" type="button" title="下移" aria-label="下移菜单">↓</button><button class="icon-action" data-menu-action="remove" type="button" title="移除" aria-label="移除菜单">×</button></div></div>'
-        + '<label class="field menu-name"><span>' + (sub ? '子菜单名称' : '一级菜单名称') + '<small class="menu-name-count"></small></span><input data-menu-field="name" value="' + esc(item.name) + '" autocomplete="off" /></label>'
-        + '<label class="field menu-value" data-menu-section="send_message"><span>发送内容 <small>最多 2000 字符</small></span><textarea data-menu-field="send_message" rows="3" placeholder="例如：#帮助">' + esc(item.send_message || '') + '</textarea></label>'
+        + '<label class="field menu-name"><span>名称<small class="menu-name-count"></small></span><input data-menu-field="name" value="' + esc(item.name) + '" autocomplete="off" /></label>'
+        + '<label class="field menu-value" data-menu-section="send_message"><span>发送内容 <small>最多 2000 字符</small></span><textarea data-menu-field="send_message" rows="1" placeholder="例如：#帮助">' + esc(item.send_message || '') + '</textarea></label>'
         + '<label class="field menu-value" data-menu-section="link"><span>HTTPS 链接</span><input data-menu-field="link" type="url" value="' + esc(item.link || '') + '" placeholder="https://example.com" /></label>';
       if (!sub) {
         row.innerHTML += '<div data-menu-section="switch"><label class="field menu-value"><span>开关 ID <small>最多 128 字符</small></span><input data-menu-field="switch_id" value="' + esc(item.switch ? item.switch.switch_id : '') + '" placeholder="唯一开关标识" /></label><div class="panel-admin"><span>默认开启</span><label class="toggle"><input data-menu-field="default" type="checkbox" aria-label="默认开启"' + (item.switch && item.switch.default ? ' checked' : '') + ' /><i></i></label></div></div>'
@@ -86,6 +88,7 @@
         (item.sub_menu_items || []).forEach(function (child) { row.querySelector('.menu-list').append(makeRow(child, true)); });
       }
       function setType(type) {
+        row.classList.toggle('menu-folder', type === 'menu');
         ui.select(row.querySelector('.menu-type'), sub ? actions.slice(0, 2) : actions, type, function (value) {
           setType(value);
           if (value === 'menu' && !row.querySelector('.menu-list').children.length) row.querySelector('.menu-list').append(makeRow(null, true));

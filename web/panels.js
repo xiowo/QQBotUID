@@ -122,7 +122,9 @@
       $('panelCopyToggle').disabled = !state.appid;
     }
     function changed() {
-      $('panelDirty').hidden = !dirty();
+      var hasChanges = dirty();
+      $('panelDirty').hidden = !hasChanges;
+      $('panelSaveDock').hidden = !hasChanges;
       $('panelRemarkCount').textContent = width($('panelRemark').value) + ' / 255';
       $('panelRemarkCount').classList.toggle('over-limit', width($('panelRemark').value) > 255);
       $('panelItemCount').textContent = rows().length + ' / 20';

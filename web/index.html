@@ -103,7 +103,8 @@
                                     </div>
                                     <p class="hint">名称最多 15 字符，描述最多 30 字符，非 ASCII 字符计 2 个。拖动手柄或用上下按钮排序。</p>
                                     <div id="panelItems" class="panel-items"></div>
-                                    <div class="panel-save-row"><button id="panelDelete" class="btn danger" type="button" hidden>删除面板</button><button id="panelSave" class="btn primary" type="button">保存到 QQ</button></div>
+                                    <div class="panel-save-row"><button id="panelDelete" class="btn danger" type="button" hidden>删除面板</button></div>
+                                    <div id="panelSaveDock" class="save-dock panel-save-dock" hidden><span>面板有未保存的修改</span><button id="panelSave" class="btn primary" type="button">保存到 QQ</button></div>
                                     <section id="panelTargetsManager" class="panel-target-manager" hidden>
                                         <h3>关联对象</h3><p class="hint">这里单独提交，不会保存上面的元素修改。</p>
                                         <p class="field">QQ 接口返回的关联对象</p><pre id="panelCurrentTargets" class="panel-current-targets"></pre>
@@ -126,7 +127,7 @@
                                     <p id="menuEmpty" class="empty">请先读取 QQ 端菜单。</p>
                                     <div id="menuItems" class="menu-list"></div>
                                     <p class="hint menu-sort-hint">拖动手柄或用上下按钮调整同级顺序。清空编辑器不会立即删除菜单，保存空菜单并确认后才会从 QQ 移除。</p>
-                                    <div class="panel-save-row"><button id="menuSave" class="btn primary" type="button">保存菜单到 QQ</button></div>
+                                    <div id="menuSaveDock" class="save-dock panel-save-dock" hidden><span>菜单有未保存的修改</span><button id="menuSave" class="btn primary" type="button">保存菜单到 QQ</button></div>
                                 </fieldset>
                             </section>
                         </fieldset>
