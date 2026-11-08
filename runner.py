@@ -54,13 +54,13 @@ from .convert import (
     build_keyboard,
     event_reply_id,
     is_bot_message,
-    is_only_at_other_bot,
     recall_endpoint,
     event_to_receive,
     event_openid_pair,
     fallback_nickname,
     normalize_buttons,
     interaction_ack_id,
+    is_only_at_other_bot,
     is_reference_message,
     messages_to_plain_text,
 )
@@ -78,7 +78,6 @@ OP_RESUME = 6
 OP_RECONNECT = 7
 OP_INVALID_SESSION = 9
 OP_HELLO = 10
-# Webhook 回调专用：12 是 ACK，13 是平台发来的回调地址校验
 OP_CALLBACK_ACK = 12
 OP_CALLBACK_VALIDATION = 13
 
@@ -562,7 +561,7 @@ class QQBotUID:
         await asyncio.gather(*self._tasks, return_exceptions=True)
         self._tasks.clear()
         if self._webhook is not None:
-            await self._webhook.remove(self.config.webhook_path)
+            await self._webhook.remove(self.config.webhook_path, self.config.appid)
             self._webhook = None
         await self.proactive.close()
         await self.users.close()
@@ -823,7 +822,7 @@ class QQBotUID:
 
     async def start_webhook(self) -> None:
         self._webhook = shared_server(self.config.webhook_host, self.config.webhook_port)
-        await self._webhook.add(self.config.webhook_path, self.handle_webhook)
+        await self._webhook.add(self.config.webhook_path, self.config.appid, self.handle_webhook)
 
     async def handle_webhook(self, request: web.Request) -> web.Response:
         raw = await request.read()
@@ -856,9 +855,7 @@ class QQBotUID:
                 await self.maybe_input_notify(receive)
                 if not await self.maintenance_reply(receive):
                     await self.bridge.push(receive)
-        if body.get("t") == "INTERACTION_CREATE":
-            return web.json_response({"op": OP_CALLBACK_ACK, "d": {}})
-        return web.json_response({})
+        return web.json_response({"op": OP_CALLBACK_ACK, "d": {}})
 
     async def send_recall_ack(self, send: MessageSend, message_id: Optional[Union[str, List[str]]]) -> None:
         if not send.echo:
@@ -1004,8 +1001,7 @@ class QQBotUID:
             return json.dumps({"ok": False, "message_id": None, "error": "缺少有效的发送目标"}, ensure_ascii=False)
         message_id, error = await self.post_message_detail(probe, endpoint, "")
         logger.debug(
-            f"[QQBotUID] 主动消息权限测试: target={target_type}/{target_id} "
-            f"ok={bool(message_id)} error={error!r}"
+            f"[QQBotUID] 主动消息权限测试: target={target_type}/{target_id} ok={bool(message_id)} error={error!r}"
         )
         if message_id:
             return json.dumps({"ok": True, "message_id": message_id, "error": ""}, ensure_ascii=False)
@@ -1115,9 +1111,7 @@ class QQBotUID:
         finally:
             self.material.schedule_cleanup()
 
-    async def send_node_items(
-        self, send: MessageSend, items: Any, msg_id: str = ""
-    ) -> Optional[List[str]]:
+    async def send_node_items(self, send: MessageSend, items: Any, msg_id: str = "") -> Optional[List[str]]:
         """node 降级多条消息发送"""
         endpoint = send_endpoint(send)
         if endpoint is None:

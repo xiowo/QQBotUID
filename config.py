@@ -88,13 +88,13 @@ CONFIG_DEFAULT: dict[str, GSC] = {
     ),
     "webhook_port": GsIntConfig(
         title="Webhook 监听端口",
-        desc="Webhook 模式下的监听端口；所有 Webhook 机器人共用这一个端口，按回调路径里的 AppID 区分。",
+        desc="Webhook 模式下的监听端口；所有机器人共用同一端口和路径，按请求头 X-Bot-Appid 区分。",
         data=8766,
         max_value=65535,
     ),
     "webhook_path": GsStrConfig(
         title="Webhook 路径",
-        desc="官方后台填的回调路径，插件会在后面追加每个机器人的 AppID。",
+        desc="所有机器人共用的回调路径，开放平台填写此路径。",
         data="/qqbotuid/webhook",
     ),
 }
@@ -397,7 +397,7 @@ def get_qqbotuid_configs() -> list["QQBotUIDConfig"]:
                 webhook_enabled=base.webhook_enabled,
                 webhook_host=base.webhook_host,
                 webhook_port=base.webhook_port,
-                webhook_path=f"{base.webhook_path.rstrip('/')}/{row.appid}",
+                webhook_path=base.webhook_path,
                 api_base=base.api_base,
                 token_base=base.token_base,
                 gateway_url=base.gateway_url,
