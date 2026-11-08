@@ -960,7 +960,7 @@ class QQBotUID:
         if chunk_size >= len(content):
             chunk_size = max(1, (len(content) + 1) // 2)
         event_id = event_reply_id(msg_id)
-        ok, stream_id = await self.sender.send_stream(
+        ok, stream_id, skipped = await self.sender.send_stream(
             send.target_id,
             content,
             msg_id="" if event_id else msg_id,
@@ -970,6 +970,9 @@ class QQBotUID:
         )
         if ok:
             return stream_id or None
+        if skipped:
+            # 同一事件/同一目标已在流式，直接走普通消息
+            return None
         if stream_id:
             return stream_id
         logger.warning("[QQBotUID] 流式发送失败，回退普通消息")

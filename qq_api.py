@@ -270,6 +270,8 @@ AUDIO_DIRECT_SUFFIXES = {"silk", "amr", "mp3", "wav", "ogg"}
 SILK_SAMPLE_RATE = 24000
 # 分享链接的 callback_data 最长 32 字符，加好友时随 FRIEND_ADD 的 scene_param 回来
 SHARE_CALLBACK_LIMIT = 32
+# 同一条事件只允许开一次流式，去重窗口覆盖被动回复的有效期
+STREAM_DEDUP_TTL = 600
 
 
 @lru_cache(maxsize=1)
@@ -639,6 +641,10 @@ class QQMateriaHost:
 class QQSender:
     def __init__(self, token_manager: QQTokenManager):
         self.tm = token_manager
+        # 正在流式的 openid，平台同一用户同时只允许一条
+        self._streaming: set[str] = set()
+        # 已经开过流式的事件，键是 event_id / msg_id，值是时间戳
+        self._stream_keys: Dict[str, float] = {}
 
     async def post_json(self, endpoint: str, payload: Dict[str, Any]) -> Tuple[bool, Dict[str, Any]]:
         logger.debug(f"[QQBotUID] POST {endpoint} {brief_text(payload, 500)}")
@@ -928,6 +934,16 @@ class QQSender:
             logger.debug(f"[QQBotUID] 正在输入状态发送失败: {brief_text(data)}")
         return ok
 
+    def _take_stream_key(self, key: str) -> bool:
+        """占用一条事件的流式名额；已占用返回 False，调用方改走普通消息。"""
+        now = time.time()
+        if len(self._stream_keys) > 64:
+            self._stream_keys = {k: v for k, v in self._stream_keys.items() if now - v < STREAM_DEDUP_TTL}
+        if key in self._stream_keys:
+            return False
+        self._stream_keys[key] = now
+        return True
+
     async def send_stream(
         self,
         target_id: str,
@@ -936,10 +952,30 @@ class QQSender:
         event_id: str = "",
         chunk_size: int = 200,
         delay_ms: int = 100,
-    ) -> Tuple[bool, str]:
-        """C2C 流式消息：按分片下发，返回 (是否成功, 消息 id)。"""
+    ) -> Tuple[bool, str, bool]:
+        """C2C 流式消息：按分片下发，返回 (是否成功, 消息 id, 是否被并发保护跳过)。"""
         if not target_id or not content:
-            return False, ""
+            return False, "", False
+        if target_id in self._streaming:
+            return False, "", True
+        key = event_id or msg_id
+        if key and not self._take_stream_key(key):
+            return False, "", True
+        self._streaming.add(target_id)
+        try:
+            return await self._stream_chunks(target_id, content, msg_id, event_id, chunk_size, delay_ms)
+        finally:
+            self._streaming.discard(target_id)
+
+    async def _stream_chunks(
+        self,
+        target_id: str,
+        content: str,
+        msg_id: str,
+        event_id: str,
+        chunk_size: int,
+        delay_ms: int,
+    ) -> Tuple[bool, str, bool]:
         endpoint = f"/v2/users/{target_id}/stream_messages"
         stream_id = ""
         base_seq = random.randint(1_000_000, 9_000_000)
@@ -966,7 +1002,7 @@ class QQSender:
                     f"[QQBotUID] 流式分片失败: HTTP {status} {brief_text(data)} "
                     f"(index={index}, msg_seq={body['msg_seq']}, 已发 {index} 片)"
                 )
-                return False, stream_id
+                return False, stream_id, False
             if not stream_id:
                 stream_id = _stream_id_of(data)
                 if not stream_id:
@@ -975,7 +1011,7 @@ class QQSender:
             if not done and delay_ms:
                 await asyncio.sleep(delay_ms / 1000)
         logger.debug(f"[QQBotUID] 流式下发完成 {index} 片 -> {target_id[:8]}…")
-        return True, stream_id
+        return True, stream_id, False
 
     async def kick_group_members(
         self,
