@@ -240,6 +240,8 @@ def _iter_md_images(content: str) -> List[Tuple[int, int, int]]:
 
 _MD_AT_PATTERN = re.compile(r"<@!?[A-Za-z0-9_\-]+>")
 _AT_TAG_PATTERN = re.compile(r'<@!?[A-Za-z0-9_\-]+>|<qqbot-at-user id="[^"]*"\s*/>|<qqbot-at-everyone />')
+# 群聊「文本消息」只认 <qqbot-at-everyone />，<qqbot-at-user /> 仅 markdown 消息生效
+_AT_USER_PATTERN = re.compile(r'<@!?[A-Za-z0-9_\-]+>|<qqbot-at-user id="[^"]*"\s*/>')
 _MD_SOFT_BREAK = re.compile(r"(?<!\n)\n(?!\n)")
 _MD_IMAGE_PATTERN = re.compile(r"!\[[^\]]*\]\([^)]+\)")
 
@@ -261,8 +263,12 @@ def _platform_selected(config_key: str, platform: str) -> bool:
 
 
 def _strip_at(text: str, target_type: str) -> str:
-    """过滤私聊@"""
-    return _AT_TAG_PATTERN.sub("", text) if target_type == "direct" else text
+    """按目标端能力过滤 at 标签：私聊没有 at；群聊文本消息不解析 <qqbot-at-user />"""
+    if target_type == "direct":
+        return _AT_TAG_PATTERN.sub("", text)
+    if target_type == "group":
+        return _AT_USER_PATTERN.sub("", text)
+    return text
 
 
 _REPLY_TARGETS = {"group": "group", "direct": "direct", "channel": "channel", "sub_channel": "sub_channel"}
