@@ -232,11 +232,11 @@ def public_image_url(image_data: str) -> str:
     return url if url.startswith(("http://", "https://")) else ""
 
 
-def _b64decode(payload: str) -> Optional[bytes]:
+def _b64decode(payload: str, *, validate: bool = False) -> Optional[bytes]:
     if not payload:
         return None
     try:
-        return base64.b64decode(payload)
+        return base64.b64decode(payload, validate=validate)
     except (ValueError, binascii.Error):
         return None
 
@@ -385,16 +385,18 @@ async def file_bytes(payload: str) -> Optional[bytes]:
         return resp.content if resp.status_code == 200 else None
     if payload.startswith("data:"):
         return _b64decode(payload.partition(",")[2])
+    if payload.startswith("base64://"):
+        return _b64decode(payload[9:])
     if payload.startswith("file://"):
         path = Path(payload[7:])
-        if not await asyncio.to_thread(path.is_file):
-            return None
-        return await asyncio.to_thread(path.read_bytes)
-    if not payload.startswith("base64://"):
+    else:
+        raw = _b64decode("".join(payload.split()), validate=True)
+        if raw is not None:
+            return raw
         path = Path(payload)
-        if await asyncio.to_thread(path.is_file):
-            return await asyncio.to_thread(path.read_bytes)
-    return _b64decode(payload.removeprefix("base64://"))
+    if not await asyncio.to_thread(path.is_file):
+        return None
+    return await asyncio.to_thread(path.read_bytes)
 
 
 def image_meta(raw: bytes) -> Tuple[str, str]:
