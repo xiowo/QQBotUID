@@ -186,6 +186,8 @@ select {
     align-items: center;
     justify-content: space-between;
     gap: 16px;
+    flex-wrap: wrap;
+    flex-shrink: 0;
     min-height: 56px;
     padding: 0 24px;
     border-bottom: 1px solid var(--qb-line);
@@ -210,6 +212,17 @@ select {
     display: flex;
     align-items: center;
     gap: 10px;
+    margin-left: auto;
+}
+
+.theme-select {
+    width: 128px;
+    flex-shrink: 0;
+}
+
+.theme-select .select-btn:focus-visible {
+    outline: 2px solid var(--qb-primary);
+    outline-offset: 3px;
 }
 
 .icon-btn {
@@ -1060,7 +1073,7 @@ select {
     }
 
     .topbar {
-        padding: 0 16px;
+        padding: 12px 16px;
     }
 
     .content {

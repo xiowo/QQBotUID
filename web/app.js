@@ -552,7 +552,8 @@
     var isErrors = page === 'errors';
     document.querySelector('.inner').classList.toggle('panel-wide', isPanel);
     document.querySelector('.inner').classList.toggle('error-wide', isErrors);
-    document.querySelector('.top-actions').hidden = page !== 'bots';
+    $('openBindBtn').hidden = page !== 'bots';
+    $('refreshBtn').hidden = page !== 'bots';
     $('pageTitle').textContent = isErrors ? '错误统计' : isPanel ? '指令面板' : 'Bot 管理';
     $('pageSubtitle').textContent = isErrors ? '查看 QQ API 请求失败记录与错误类型' : isPanel ? '按机器人和场景配置 QQ 官方指令面板' : '管理接入早柚核心的 QQ 官方机器人';
     updateDirty();
@@ -562,6 +563,38 @@
   on('navBots', 'click', function () { switchPage('bots'); });
   on('navErrors', 'click', function () { switchPage('errors'); });
   on('navPanels', 'click', function () { switchPage('panels'); });
+
+  var THEME_KEY = 'qqbotuid.theme';
+  var themeMode = 'global';
+  try {
+    var savedTheme = localStorage.getItem(THEME_KEY);
+    if (savedTheme === 'light' || savedTheme === 'dark') themeMode = savedTheme;
+  } catch (err) {
+    themeMode = 'global';
+  }
+
+  function applyPageTheme() {
+    var mode = themeMode === 'global' ? (SDK ? SDK.theme : 'light') : themeMode;
+    document.documentElement.classList.toggle('dark', mode === 'dark');
+    document.documentElement.dataset.theme = mode;
+  }
+
+  function renderThemeSelect() {
+    window.QQBotSelect($('themeSelect'), [['global', '跟随全局'], ['light', '浅色'], ['dark', '深色']], themeMode, function (value) {
+      themeMode = value;
+      applyPageTheme();
+      renderThemeSelect();
+      try {
+        localStorage.setItem(THEME_KEY, value);
+      } catch (err) {
+        showToast('主题已切换，但浏览器未能保存本次选择', true);
+      }
+    }, '页面主题');
+  }
+
+  if (SDK) SDK.onTheme(applyPageTheme);
+  applyPageTheme();
+  renderThemeSelect();
 
   function boot() {
     load(true);
