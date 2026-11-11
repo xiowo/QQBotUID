@@ -81,6 +81,8 @@
     });
   }
 
+  window.QQBotSelect = select;
+
   window.QQBotPanels = function (ui) {
     var state = { bots: [], appid: '', scope: 'c2c', list: [], cursor: '', id: '', version: null, target: 'all', saved: '', busy: false, loaded: false, needsReload: false };
     var copyScope = 'c2c';
@@ -204,8 +206,8 @@
     function refresh() {
       return work(async function () {
         if (!state.appid) return;
-        if (isMenu()) { await loadMenu(); notice('已从 QQ 刷新全局菜单'); }
-        else { await loadList(false); notice('已从 QQ 刷新面板列表'); }
+        if (isMenu()) { await loadMenu(); notice('已刷新全局菜单'); }
+        else { await loadList(false); notice('已刷新面板列表'); }
       });
     }
     async function readDetail(id) {
@@ -317,11 +319,11 @@
       confirmRemote(body.menu ? '保存全局自定义菜单？' : '移除全局自定义菜单？', body.menu
         ? '将用当前 ' + body.menu.items.length + ' 个一级菜单项替换 QQ 端整份菜单。'
         : '当前编辑器为空，确认后将从 QQ 移除这个机器人的全局自定义菜单。', async function () {
-        await ui.api(menuPath(), { method: 'PUT', body: JSON.stringify(body) });
-        menu.markSaved(); notice(body.menu ? '全局菜单已保存到 QQ' : '全局菜单已从 QQ 移除');
-        try { await loadMenu(); }
-        catch (error) { notice('菜单已提交到 QQ，但回读失败：' + error.message, true); }
-      });
+          await ui.api(menuPath(), { method: 'PUT', body: JSON.stringify(body) });
+          menu.markSaved(); notice(body.menu ? '全局菜单已保存到 QQ' : '全局菜单已移除');
+          try { await loadMenu(); }
+          catch (error) { notice('菜单已提交到 QQ，但回读失败：' + error.message, true); }
+        });
     };
     $('menuClear').onclick = function () {
       if (state.busy) return;
@@ -341,7 +343,7 @@
       confirmRemote('删除指令面板？', '面板「' + ($('panelRemark').value || state.id) + '」及其关联关系将从 QQ 删除，此操作不可撤销。', async function () {
         await ui.api(itemPath(state.id), { method: 'DELETE' });
         state.list = state.list.filter(function (entry) { return idOf(entry) !== state.id; });
-        reset(); notice('面板已从 QQ 删除'); await loadList(false);
+        reset(); notice('面板已删除'); await loadList(false);
       });
     };
     $('panelList').onclick = function (event) {
@@ -397,14 +399,16 @@
     $('panelCopyList').onclick = function (event) {
       var button = event.target.closest('[data-copy]');
       if (!button) return;
-      ui.confirm({ title: '复制面板元素？', text: '将用「' + button.textContent + '」的元素替换当前全部元素。备注和关联对象不会改变；保存前不会修改 QQ 端配置。', okText: '复制元素', onOk: function () {
-        return work(async function () {
-          var data = unwrap(await ui.api(itemPath(button.dataset.copy)));
-          var source = data && (data.panel || data);
-          if (!source || !Array.isArray(source.items) || !source.items.length || source.items.length > 20) throw new Error('来源面板的元素数量不合法');
-          $('panelItems').replaceChildren(); source.items.forEach(addItem); closeCopy(); changed(); notice('元素已复制，保存后才会提交到 QQ');
-        });
-      } });
+      ui.confirm({
+        title: '复制面板元素？', text: '将用「' + button.textContent + '」的元素替换当前全部元素。备注和关联对象不会改变；保存前不会修改 QQ 端配置。', okText: '复制元素', onOk: function () {
+          return work(async function () {
+            var data = unwrap(await ui.api(itemPath(button.dataset.copy)));
+            var source = data && (data.panel || data);
+            if (!source || !Array.isArray(source.items) || !source.items.length || source.items.length > 20) throw new Error('来源面板的元素数量不合法');
+            $('panelItems').replaceChildren(); source.items.forEach(addItem); closeCopy(); changed(); notice('元素已复制，保存后才会提交到 QQ');
+          });
+        }
+      });
     };
     document.addEventListener('click', function (event) { if (!event.target.closest('.cp-select')) closeSelects(); });
     window.addEventListener('beforeunload', function (event) { if (dirty() || $('panelManageIds').value.trim()) { event.preventDefault(); event.returnValue = ''; } });

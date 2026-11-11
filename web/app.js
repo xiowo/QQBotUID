@@ -5,6 +5,7 @@
   var API_BASE = '/api/qqbotuid';
   var POLL_INTERVAL_MS = 2000;
   var panelController;
+  var errorController;
   var activePage = 'bots';
   var state = {
     bots: [],
@@ -532,6 +533,7 @@
   });
 
   panelController = window.QQBotPanels({ api: api, toast: showToast, confirm: openConfirm });
+  errorController = window.QQBotErrors({ api: api, toast: showToast });
 
   function switchPage(page) {
     if (panelController.busy()) {
@@ -539,22 +541,26 @@
       return;
     }
     activePage = page;
-    ['bots', 'panels'].forEach(function (name) {
+    ['bots', 'errors', 'panels'].forEach(function (name) {
       $('page-' + name).classList.toggle('active', name === page);
-      var nav = $(name === 'bots' ? 'navBots' : 'navPanels');
+      var nav = $({ bots: 'navBots', errors: 'navErrors', panels: 'navPanels' }[name]);
       nav.classList.toggle('active', name === page);
       if (name === page) nav.setAttribute('aria-current', 'page');
       else nav.removeAttribute('aria-current');
     });
     var isPanel = page === 'panels';
+    var isErrors = page === 'errors';
     document.querySelector('.inner').classList.toggle('panel-wide', isPanel);
-    document.querySelector('.top-actions').hidden = isPanel;
-    $('pageTitle').textContent = isPanel ? '指令面板' : 'Bot 管理';
-    $('pageSubtitle').textContent = isPanel ? '按机器人和场景配置 QQ 官方指令面板' : '管理接入早柚核心的 QQ 官方机器人';
+    document.querySelector('.inner').classList.toggle('error-wide', isErrors);
+    document.querySelector('.top-actions').hidden = page !== 'bots';
+    $('pageTitle').textContent = isErrors ? '错误统计' : isPanel ? '指令面板' : 'Bot 管理';
+    $('pageSubtitle').textContent = isErrors ? '查看 QQ API 请求失败记录与错误类型' : isPanel ? '按机器人和场景配置 QQ 官方指令面板' : '管理接入早柚核心的 QQ 官方机器人';
     updateDirty();
     if (isPanel) panelController.open();
+    if (isErrors) errorController.open();
   }
   on('navBots', 'click', function () { switchPage('bots'); });
+  on('navErrors', 'click', function () { switchPage('errors'); });
   on('navPanels', 'click', function () { switchPage('panels'); });
 
   function boot() {

@@ -1,10 +1,12 @@
 import base64
+import asyncio
 from io import BytesIO
-from typing import Any
+from typing import Any, Literal
 from pathlib import Path
 from dataclasses import replace
 
 import qrcode
+from fastapi import Query, HTTPException
 from qrcode.image.pil import PilImage
 
 from gsuid_core.logger import logger
@@ -15,7 +17,8 @@ from .config import QQBotUIDConfig, display_mode
 from .qq_api import fetch_bot_profile
 from .qr_bind import poll_bind_task, create_bind_task
 from .startup import qqbotuid_runtime
-from .bots_store import BotRow, delete_row, load_rows, save_rows, save_bot_profile, upsert_bound_bot
+from .bots_store import BotRow, load_rows, save_rows, delete_row, save_bot_profile, upsert_bound_bot
+from .error_store import ErrorBot, ErrorResponse, QQBotUIDAPIError
 
 WEB_DIR = Path(__file__).with_name("web")
 
@@ -106,6 +109,24 @@ async def _refresh_profile(appid: str, secret: str) -> bool:
         union_openid=profile.union_openid,
         description=profile.description,
     )
+
+
+@api.get("/errors")
+async def qqbotuid_errors(
+    days: int = Query(1, ge=1, le=30),
+    appid: str = Query("", max_length=128),
+    page: int = Query(1, ge=1, le=100000),
+    page_size: int = Query(20, ge=1, le=100),
+    view: Literal["recent", "types"] = "recent",
+) -> ErrorResponse:
+    if days not in {1, 7, 30}:
+        raise HTTPException(status_code=422, detail="时间范围须为今日、7 天或 30 天")
+    data = await QQBotUIDAPIError.query_errors(days, appid, page, page_size, view)
+    bots = {bot.appid: bot for bot in data.bots}
+    for row in await asyncio.to_thread(load_rows):
+        bots[row.appid] = ErrorBot(appid=row.appid, bot_name=row.bot_name, avatar=row.avatar_url)
+    data.bots = sorted(bots.values(), key=lambda bot: (bot.bot_name, bot.appid))
+    return {"status": 0, "msg": "ok", "data": data}
 
 
 @api.get("/bots")

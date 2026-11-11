@@ -12,7 +12,7 @@ import importlib
 import threading
 import traceback
 import contextlib
-from typing import Any, Dict, List, Deque, Callable, Optional
+from typing import Any, Dict, List, Deque, Callable, Optional, Protocol, runtime_checkable
 from pathlib import Path
 from collections import deque
 from urllib.parse import quote
@@ -589,6 +589,11 @@ def _module(name: str) -> Any:
     return sys.modules[f"plugins.QQBotUID.{name}"]
 
 
+@runtime_checkable
+class _ErrorCaptureModule(Protocol):
+    async def close_error_records(self) -> None: ...
+
+
 class Daemon:
     def __init__(self) -> None:
         self.bridge: Optional[Any] = None
@@ -753,6 +758,9 @@ class Daemon:
             await self.bridge.shutdown()
             self.bridge = None
         await stop_upload_plugins()
+        key = "plugins.QQBotUID.error_capture"
+        if key in sys.modules and isinstance(module := sys.modules[key], _ErrorCaptureModule):
+            await module.close_error_records()
 
 
 def main() -> int:

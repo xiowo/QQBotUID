@@ -26,6 +26,7 @@ from gsuid_core.utils.plugins_config.gs_config import pic_upload_config
 
 from .config import QQBotUIDConfig
 from .group_info import QQBotUIDGroupInfo
+from .error_capture import ErrorRecordingClient
 
 _MATERIALS: ContextVar[Tuple[str, ...]] = ContextVar("qqbotuid_materials", default=())
 
@@ -44,7 +45,7 @@ class QQTokenManager:
 
     async def client(self) -> httpx.AsyncClient:
         if self._client is None or self._client.is_closed:
-            self._client = httpx.AsyncClient(base_url=self.config.api_base, timeout=30.0)
+            self._client = ErrorRecordingClient(self.config, base_url=self.config.api_base, timeout=30.0)
         return self._client
 
     async def token(self) -> str:
@@ -53,7 +54,7 @@ class QQTokenManager:
         async with self._lock:
             if self._token and time.time() < self._expires_at - 60:
                 return self._token
-            async with httpx.AsyncClient(timeout=15.0) as client:
+            async with ErrorRecordingClient(self.config, base_url=self.config.token_base, timeout=15.0) as client:
                 resp = await client.post(
                     f"{self.config.token_base}/app/getAppAccessToken",
                     json={"appId": self.config.appid, "clientSecret": self.config.secret},
@@ -297,8 +298,19 @@ def _silk_encode(raw: bytes, suffix: str) -> Optional[bytes]:
         try:
             done = subprocess.run(
                 [
-                    ffmpeg, "-y", "-loglevel", "error", "-i", str(src),
-                    "-f", "s16le", "-ar", str(SILK_SAMPLE_RATE), "-ac", "1", str(pcm),
+                    ffmpeg,
+                    "-y",
+                    "-loglevel",
+                    "error",
+                    "-i",
+                    str(src),
+                    "-f",
+                    "s16le",
+                    "-ar",
+                    str(SILK_SAMPLE_RATE),
+                    "-ac",
+                    "1",
+                    str(pcm),
                 ],
                 capture_output=True,
                 timeout=60,

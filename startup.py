@@ -17,6 +17,8 @@ from .group_info import ensure_table as ensure_group_table
 from .supervisor import DaemonSupervisor
 from .union_info import ensure_table as ensure_union_table
 from .core_bridge import CoreBridge
+from .error_store import ensure_table as ensure_error_table
+from .error_capture import error_recorder, close_error_records
 from .command_panel_client import PanelClientPool
 
 _RUNTIME_SLOT = "_qqbotuid_runtime"
@@ -104,6 +106,7 @@ class _Runtime:
         self.panel_clients = PanelClientPool()
 
     async def start(self) -> None:
+        error_recorder.start()
         if self.panel_clients.closed:
             self.panel_clients = PanelClientPool()
         base = QQBotUIDConfig.from_config()
@@ -115,6 +118,7 @@ class _Runtime:
         await ensure_group_table()
         await ensure_user_table()
         await ensure_union_table()
+        await ensure_error_table()
         if base.daemon_mode:
             if not base.enabled:
                 await self.supervisor.reap()
@@ -147,6 +151,7 @@ class _Runtime:
             with contextlib.suppress(asyncio.CancelledError):
                 await adapter.stop()
         await self.bridge.shutdown()
+        await close_error_records()
 
     async def restart(self) -> None:
         if QQBotUIDConfig.from_config().daemon_mode and self.supervisor.running:

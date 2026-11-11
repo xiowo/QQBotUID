@@ -70,6 +70,7 @@ from .user_info import UserRecorder, ensure_table as ensure_user_table
 from .group_info import ensure_table as ensure_group_table
 from .union_info import UnionRecorder, ensure_table as ensure_union_table
 from .core_bridge import CoreBridge
+from .error_store import ensure_table as ensure_error_table
 
 OP_DISPATCH = 0
 OP_HEARTBEAT = 1
@@ -539,6 +540,7 @@ class QQBotUID:
         await ensure_group_table()
         await ensure_user_table()
         await ensure_union_table()
+        await ensure_error_table()
         self.bridge.add_target(self)
         try:
             if self.config.mode == "wh":

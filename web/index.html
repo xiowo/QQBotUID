@@ -9,6 +9,7 @@
     <script>
         document.write('<link rel="stylesheet" href="./app.css?v=' + Date.now() + '">');
         document.write('<link rel="stylesheet" href="./panels.css?v=' + Date.now() + '">');
+        document.write('<link rel="stylesheet" href="./errors.css?v=' + Date.now() + '">');
     </script>
 </head>
 
@@ -26,6 +27,12 @@
                         <path d="M15 13h.01" />
                     </svg>
                     <span>Bot 管理</span>
+                </button>
+                <button id="navErrors" class="nav-item" type="button">
+                    <svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true">
+                        <path d="M4 20V4M4 20h16M8 16v-4M12 16V8M16 16v-7" />
+                    </svg>
+                    <span>错误统计</span>
                 </button>
                 <button id="navPanels" class="nav-item" type="button">
                     <svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true">
@@ -66,6 +73,30 @@
                         </div>
                         <div id="botList" class="bot-list">
                             <div class="empty">正在读取 Bot…</div>
+                        </div>
+                    </section>
+                    <section id="page-errors" class="page" aria-label="错误统计">
+                        <form id="errorFilters" class="error-filters">
+                            <div id="errorDays" class="error-segments" role="group" aria-label="时间范围">
+                                <button class="btn active" type="button" data-days="1" aria-pressed="true">今日</button>
+                                <button class="btn" type="button" data-days="7" aria-pressed="false">7 天</button>
+                                <button class="btn" type="button" data-days="30" aria-pressed="false">30 天</button>
+                            </div>
+                            <div class="field error-bot-filter"><span>机器人</span><div id="errorBot"></div></div>
+                            <button id="errorQuery" class="btn" type="submit">查询</button>
+                        </form>
+                        <div class="error-box">
+                            <div id="errorViews" class="error-segments" role="group" aria-label="统计视图">
+                                <button class="btn active" type="button" data-view="recent" aria-pressed="true">最近报错</button>
+                                <button class="btn" type="button" data-view="types" aria-pressed="false">报错类型统计</button>
+                            </div>
+                            <p id="errorSummary" class="error-summary" role="status">尚未查询</p>
+                            <div id="errorResults" aria-busy="false"></div>
+                            <div class="error-pager">
+                                <span id="errorPageInfo"></span>
+                                <button id="errorPrev" class="btn" type="button" disabled>上一页</button>
+                                <button id="errorNext" class="btn" type="button" disabled>下一页</button>
+                            </div>
                         </div>
                     </section>
                     <section id="page-panels" class="page" aria-label="指令面板配置">
@@ -180,6 +211,17 @@
         </div>
     </div>
 
+    <dialog id="errorContentDialog" class="modal-card error-content-dialog" aria-labelledby="errorContentTitle">
+        <header class="modal-head">
+            <div>
+                <h2 id="errorContentTitle">消息内容</h2>
+                <p>完整消息内容</p>
+            </div>
+            <button id="closeErrorContent" class="icon-btn" type="button" aria-label="关闭消息内容" autofocus>✕</button>
+        </header>
+        <div id="errorContentBody" class="error-content-body" tabindex="0"></div>
+    </dialog>
+
     <div id="confirmModal" class="modal" hidden>
         <div class="modal-mask" data-close="1"></div>
         <div class="modal-card confirm-card" role="dialog" aria-modal="true" aria-labelledby="confirmTitle">
@@ -207,6 +249,7 @@
     <script>
         document.write('<script src="./menu.js?v=' + Date.now() + '"><\/script>');
         document.write('<script src="./panels.js?v=' + Date.now() + '"><\/script>');
+        document.write('<script src="./errors.js?v=' + Date.now() + '"><\/script>');
         document.write('<script src="./app.js?v=' + Date.now() + '"><\/script>');
     </script>
 </body>
