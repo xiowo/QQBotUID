@@ -736,7 +736,7 @@ def event_to_receive(
         return MessageReceive(
             bot_id=bot_id,
             bot_self_id=bot_self_id,
-            msg_id=str(payload.get("id") or d.get("id") or ""),
+            msg_id=event_msg_id(str(payload.get("id") or d.get("id") or "")),
             user_type=user_type,  # type: ignore[arg-type]
             group_id=target_id,
             user_id=user_id,

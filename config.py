@@ -225,7 +225,7 @@ QQBOTUID_CONFIG_PATH = get_res_path("QQBotUID") / "config.json"
 ADVANCED_CONFIG_PATH = get_res_path("QQBotUID") / "advanced_config.json"
 
 qqbotuid_config = StringConfig("QQBotUID配置", QQBOTUID_CONFIG_PATH, CONFIG_DEFAULT)
-advanced_config = StringConfig("高级配置", ADVANCED_CONFIG_PATH, ADVANCED_CONFIG_DEFAULT)
+advanced_config = StringConfig("QQBot高级配置", ADVANCED_CONFIG_PATH, ADVANCED_CONFIG_DEFAULT)
 
 
 def _cfg_str(config: StringConfig, name: str, default: str = "") -> str:
@@ -261,7 +261,10 @@ def proactive_interval_ms(scene: str) -> int:
 
 def maintenance_message() -> str:
     """维护提示文案（断连维护和主人维护共用）。"""
-    return _cfg_str(advanced_config, "disconnect_reply_message", DEFAULT_MAINTENANCE_MESSAGE)
+    raw = _cfg_str(
+        advanced_config, "disconnect_reply_message", DEFAULT_MAINTENANCE_MESSAGE
+    )
+    return raw.replace("\\r\\n", "\n").replace("\\n", "\n")
 
 
 def master_only_enabled() -> bool:
