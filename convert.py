@@ -825,10 +825,10 @@ def at_tag(data: Any, user_type: str = "") -> str:
     """at 转官方标签：全体走 at-everyone，频道用 <@id>，其余走 at-user。"""
     raw = str(data or "").strip()
     if raw.lower() == "all":
-        return AT_EVERYONE_TAG
+        return f"{AT_EVERYONE_TAG} "
     if user_type in {"channel", "sub_channel"}:
-        return f"<@{raw}>"
-    return f'<qqbot-at-user id="{raw}" />'
+        return f"<@{raw}> "
+    return f'<qqbot-at-user id="{raw}" /> '
 
 
 def messages_to_plain_text(messages: Iterable[Message], user_type: str = "") -> str:

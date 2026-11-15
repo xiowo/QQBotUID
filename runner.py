@@ -265,11 +265,11 @@ def _platform_selected(config_key: str, platform: str) -> bool:
 
 def _strip_at(text: str, target_type: str) -> str:
     """按目标端能力过滤 at 标签：私聊没有 at；群聊文本消息不解析 <qqbot-at-user />"""
-    if target_type == "direct":
-        return _AT_TAG_PATTERN.sub("", text)
-    if target_type == "group":
-        return _AT_USER_PATTERN.sub("", text)
-    return text
+    pattern = {"direct": _AT_TAG_PATTERN, "group": _AT_USER_PATTERN}.get(target_type)
+    if pattern is None:
+        return text
+    cleaned = pattern.sub("", text)
+    return cleaned.lstrip(" \t") if cleaned != text else text
 
 
 _REPLY_TARGETS = {"group": "group", "direct": "direct", "channel": "channel", "sub_channel": "sub_channel"}
