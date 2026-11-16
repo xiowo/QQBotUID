@@ -465,6 +465,20 @@ def _event_user_id(d: Dict[str, Any]) -> str:
     )
 
 
+def _event_user_pm(d: Dict[str, Any], user_type: str = "group") -> int:
+    """QQ 群成员角色 → 核心 user_pm。"""
+    if user_type != "group":
+        return 6
+    raw_author = d.get("author")
+    author = raw_author if isinstance(raw_author, dict) else {}
+    role = str(author.get("member_role") or "").strip().lower()
+    if role == "owner":
+        return 2
+    if role == "admin":
+        return 3
+    return 6
+
+
 def _build_qqbot_member_avatar(appid: str, member_openid: str) -> str:
     """官机用户头像，appid 用配置里存的那个。"""
     member_openid = str(member_openid or "").strip()
@@ -671,6 +685,7 @@ def _interaction_to_receive(
         user_type=user_type,  # type: ignore[arg-type]
         group_id=target_id,
         user_id=user_id,
+        user_pm=_event_user_pm(d, user_type),
         sender=_sender(d, user_id, target_id, appid, group_name, nickname),
         content=[Message(type="text", data=text)],
     )
@@ -710,6 +725,7 @@ def event_to_receive(
             user_type="channel",
             group_id=str(d.get("channel_id") or d.get("guild_id") or "") or None,
             user_id=user_id,
+            user_pm=_event_user_pm(d, "channel"),
             sender=_sender(d, user_id, str(d.get("channel_id") or ""), appid, group_name, nickname),
             content=[Message(type=f"meta-{event_type}", data=d)],
         )
@@ -724,6 +740,7 @@ def event_to_receive(
             user_type="group",
             group_id=group_id,
             user_id=user_id,
+            user_pm=_event_user_pm(d, "group"),
             sender=_sender(d, user_id, group_id, appid, group_name, nickname),
             content=[Message(type=f"meta-{event_type}", data=d)],
         )
@@ -740,6 +757,7 @@ def event_to_receive(
             user_type=user_type,  # type: ignore[arg-type]
             group_id=target_id,
             user_id=user_id,
+            user_pm=_event_user_pm(d, user_type),
             sender=_sender(d, user_id, target_id, appid, group_name, nickname),
             content=[meta],
         )
@@ -813,6 +831,7 @@ def event_to_receive(
         user_type=user_type,  # type: ignore[arg-type]
         group_id=target_id,
         user_id=user_id,
+        user_pm=_event_user_pm(d, user_type),
         sender=_sender(d, user_id, target_id, appid, group_name, nickname),
         content=content,
     )
