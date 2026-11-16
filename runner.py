@@ -352,8 +352,11 @@ async def _admin_kick(bot: "QQBotUID", data: Dict[str, Any]) -> Dict[str, Any]:
     openids = _admin_list(data, "member_openids", "member_openid")
     if not group_id or not openids:
         return {"ok": False, "error": "缺少 group_openid 或 member_openids"}
-    ok = await bot.sender.kick_group_members(group_id, openids, bool(data.get("add_to_blacklist")))
-    return {"ok": ok}
+    ok, raw = await bot.sender.kick_group_members(group_id, openids)
+    body: Dict[str, Any] = {"ok": ok}
+    if not ok:
+        body["error"] = _qq_error_text(raw)
+    return body
 
 
 async def _admin_mute(bot: "QQBotUID", data: Dict[str, Any]) -> Dict[str, Any]:

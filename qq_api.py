@@ -1031,18 +1031,25 @@ class QQSender:
         self,
         group_id: str,
         member_openids: List[str],
-        add_to_blacklist: bool = False,
-    ) -> bool:
+    ) -> Tuple[bool, Dict[str, Any]]:
         """踢人，一次最多 20 个。"""
         if not group_id or not member_openids:
-            return False
+            return False, {"code": -1, "message": "缺少 group_id 或 member_openids"}
         ok, data = await self.post_json(
             f"/v2/groups/{group_id}/batch_remove_members",
-            {"member_openids": member_openids[:20], "add_to_member_blacklist": add_to_blacklist},
+            {"member_openids": member_openids[:20]},
         )
-        if not ok:
+        body = data if isinstance(data, dict) else {}
+        result = body.get("remove_members_result")
+        success = (
+            ok
+            and body.get("code") in (None, 0, "0")
+            and body.get("err_code") in (None, 0, "0")
+            and result in (None, "", "success")
+        )
+        if not success:
             logger.warning(f"[QQBotUID] 踢人失败: {brief_text(data)}")
-        return ok
+        return success, data
 
     async def get_group_mute_state(self, group_id: str) -> Dict[str, Any]:
         """群内当前禁言状态。"""
