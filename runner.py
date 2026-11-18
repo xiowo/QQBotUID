@@ -362,12 +362,15 @@ async def _admin_kick(bot: "QQBotUID", data: Dict[str, Any]) -> Dict[str, Any]:
 
 async def _admin_mute(bot: "QQBotUID", data: Dict[str, Any]) -> Dict[str, Any]:
     group_id = _admin_str(data, "group_openid", "group_id")
-    openid = _admin_str(data, "member_openid", "user_id")
+    openids = _admin_list(data, "member_openids")
     seconds = _duration_seconds(data.get("seconds", data.get("duration")))
-    if not group_id or not openid or seconds is None:
-        return {"ok": False, "error": "缺少 group_openid / member_openid / seconds"}
-    ok = await bot.sender.set_group_member_mute(group_id, openid, seconds)
-    return {"ok": ok}
+    if not group_id or not openids or seconds is None:
+        return {"ok": False, "error": "缺少 group_openid / member_openids / seconds"}
+    ok, raw = await bot.sender.set_group_members_mute(group_id, openids, seconds)
+    body: Dict[str, Any] = {"ok": ok}
+    if not ok:
+        body["error"] = _qq_error_text(raw)
+    return body
 
 
 async def _admin_mute_state(bot: "QQBotUID", data: Dict[str, Any]) -> Dict[str, Any]:
@@ -925,7 +928,8 @@ class QQBotUID:
                 )
             )
             return
-        if await self.sender.set_group_member_mute(group_id, user_id, seconds):
+        ok, _ = await self.sender.set_group_members_mute(group_id, [user_id], seconds)
+        if ok:
             if seconds:
                 logger.info(t("[QQBotUID] 已禁言 {user_id} {sec} 秒", user_id=user_id, sec=seconds))
             else:

@@ -705,24 +705,37 @@ class QQSender:
         logger.debug(f"[QQBotUID] DELETE {endpoint} -> {resp.status_code} {brief_text(resp.text)}")
         return 200 <= resp.status_code < 300
 
-    async def set_group_member_mute(self, group_id: str, member_openid: str, seconds: int) -> bool:
-        if not group_id or not member_openid:
-            return False
+    async def set_group_members_mute(
+        self, group_id: str, member_openids: List[str], seconds: int
+    ) -> Tuple[bool, Dict[str, Any]]:
+        """设置群成员禁言，单次最多 20 人。"""
+        members = [item for item in member_openids if item][:20]
+        if not group_id or not members:
+            return False, {}
         endpoint = f"/v2/groups/{group_id}/restrict_chat_setting"
         if seconds <= 0:
-            ok, data = await self.post_json(endpoint, {"members": [{"op": "del", "member_openid": member_openid}]})
+            payload = {"members": [{"op": "del", "member_openid": item} for item in members]}
+            ok, data = await self.post_json(endpoint, payload)
             if not ok:
-                logger.warning(f"[QQBotUID] 解除禁言失败: {member_openid} {brief_text(data)}")
-            return ok
-        expire_at = (datetime.now().astimezone() + timedelta(seconds=seconds)).isoformat(timespec="seconds")
-        member = {"member_openid": member_openid, "mute_expire_at": expire_at}
-        ok, data = await self.post_json(endpoint, {"members": [{"op": "add", **member}]})
+                logger.warning(f"[QQBotUID] 批量解除禁言失败: {brief_text(data)}")
+            return ok, data
+        expire_at = (datetime.now().astimezone() + timedelta(seconds=seconds)).isoformat(
+            timespec="seconds"
+        )
+        entries = [
+            {"member_openid": item, "mute_expire_at": expire_at} for item in members
+        ]
+        ok, data = await self.post_json(
+            endpoint, {"members": [{"op": "add", **entry} for entry in entries]}
+        )
         if ok:
-            return True
-        ok, data = await self.post_json(endpoint, {"members": [{"op": "update", **member}]})
+            return True, data
+        ok, data = await self.post_json(
+            endpoint, {"members": [{"op": "update", **entry} for entry in entries]}
+        )
         if not ok:
-            logger.warning(f"[QQBotUID] 禁言失败: {member_openid} {seconds}s {brief_text(data)}")
-        return ok
+            logger.warning(f"[QQBotUID] 批量禁言失败: {seconds}s {brief_text(data)}")
+        return ok, data
 
     async def upload_media(
         self,
