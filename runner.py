@@ -53,6 +53,7 @@ from .convert import (
     send_endpoint,
     build_keyboard,
     event_reply_id,
+    INTERACTION_EVENT,
     is_bot_message,
     recall_endpoint,
     event_to_receive,
@@ -726,7 +727,7 @@ class QQBotUID:
             self._record_union_openid(payload)
             self.users.observe(receive)
             await self.maybe_input_notify(receive)
-            if await self.maintenance_reply(receive):
+            if await self.maintenance_reply(receive, str(event_type or "")):
                 return
             await self.bridge.push(receive)
 
@@ -790,8 +791,26 @@ class QQBotUID:
             )
         )
 
-    async def maintenance_reply(self, receive: MessageReceive) -> bool:
-        """维护期间用提示顶替核心的回复，返回 True 表示已回提示。"""
+    def _maintenance_silent(self, receive: MessageReceive) -> bool:
+        """维护期间，按钮回调 / meta 事件是否该静默丢弃。"""
+        if master_only_enabled() and not is_master(receive.user_id):
+            return True
+        rule = maintenance_rule()
+        if rule is None:
+            return False
+        active = getattr(self.bridge, "maintenance_active", None)
+        if not callable(active):
+            return False
+        return bool(active(rule.threshold))
+
+    async def maintenance_reply(self, receive: MessageReceive, event_type: str = "") -> bool:
+        """维护期间处理入站消息，返回 True 表示已处理（回提示或静默丢弃），不再推核心。"""
+        if event_type == INTERACTION_EVENT or _is_lifecycle(receive):
+            if self._maintenance_silent(receive):
+                kind = "按钮回调" if event_type == INTERACTION_EVENT else "meta事件"
+                logger.debug(f"[QQBotUID] 维护中，{kind}已静默丢弃")
+                return True
+            return False
         message = self._maintenance_message(receive)
         if not message:
             return False
@@ -866,7 +885,7 @@ class QQBotUID:
                 self._record_union_openid(body)
                 self.users.observe(receive)
                 await self.maybe_input_notify(receive)
-                if not await self.maintenance_reply(receive):
+                if not await self.maintenance_reply(receive, str(body.get("t") or "")):
                     await self.bridge.push(receive)
         return web.json_response({"op": OP_CALLBACK_ACK, "d": {}})
 
