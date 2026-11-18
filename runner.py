@@ -735,6 +735,8 @@ class QQBotUID:
         seconds = input_notify_seconds()
         if not seconds or receive.user_type != "direct" or not receive.user_id:
             return
+        if event_reply_id(receive.msg_id):
+            return
         if self.passive.remaining(receive.msg_id) <= 1 or not self.passive.take(receive.msg_id):
             return
         await self.sender.send_input_notify(receive.user_id, seconds, receive.msg_id)
