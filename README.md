@@ -459,7 +459,7 @@ if payload.get("ok"):
 | `action` | 额外参数 | 回执 `data` |
 | :--- | :--- | :--- |
 | `kick` | `group_openid`、`member_openids`、`add_to_blacklist` | 无 |
-| `mute` | `group_openid`、`member_openid`、`seconds`（0 为解禁） | 无 |
+| `mute` | `group_openid`、`member_openids`、`seconds`（0 为解禁） | 无 |
 | `mute_state` | `group_openid` | 群内禁言状态 |
 | `bot_state` | `group_openid` | 机器人在群里的身份（是否管理员） |
 | `group_list` | 无 | 机器人所在的群列表，已自动翻页 |
