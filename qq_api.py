@@ -271,8 +271,8 @@ AUDIO_DIRECT_SUFFIXES = {"silk", "amr", "mp3", "wav", "ogg"}
 SILK_SAMPLE_RATE = 24000
 # 分享链接的 callback_data 最长 32 字符，加好友时随 FRIEND_ADD 的 scene_param 回来
 SHARE_CALLBACK_LIMIT = 32
-# 同一条事件只允许开一次流式，去重窗口覆盖被动回复的有效期
-STREAM_DEDUP_TTL = 600
+# 同一条事件只允许开一次流式，去重窗口与被动回复有效期一致，均为 60 分钟
+STREAM_DEDUP_TTL = 3600
 
 
 @lru_cache(maxsize=1)
@@ -966,6 +966,10 @@ class QQSender:
         now = time.time()
         if len(self._stream_keys) > 64:
             self._stream_keys = {k: v for k, v in self._stream_keys.items() if now - v < STREAM_DEDUP_TTL}
+            overflow = len(self._stream_keys) - 64
+            if overflow > 0:
+                for old_key in list(self._stream_keys)[:overflow]:
+                    self._stream_keys.pop(old_key, None)
         if key in self._stream_keys:
             return False
         self._stream_keys[key] = now

@@ -9,31 +9,34 @@ from .config import proactive_interval_ms
 
 ProactiveJob = Callable[[], Awaitable[Any]]
 
-PASSIVE_WINDOW_SECONDS = 300.0
+# 群内回复与私聊回复的被动
+PASSIVE_WINDOW_SECONDS = 3600.0
 PASSIVE_REPLY_LIMIT = 5
+PASSIVE_TRACK_LIMIT = 20
 
 
 class PassiveWindow:
-    """记住最近入站 msg_id 的时刻和已用次数；窗口内且未超次的才允许被动回复。"""
+    """按会话缓存最近入站的 msg_id。"""
 
     def __init__(
         self,
         window: float = PASSIVE_WINDOW_SECONDS,
-        limit: int = 512,
+        limit: int = PASSIVE_TRACK_LIMIT,
         reply_limit: int = PASSIVE_REPLY_LIMIT,
     ) -> None:
         self.window = window
         self.limit = limit
         self.reply_limit = max(int(reply_limit), 1)
-        self._seen: Dict[str, Tuple[float, int]] = {}
+        self._seen: Dict[str, Tuple[float, int, str]] = {}
 
-    def mark(self, msg_id: str) -> None:
+    def mark(self, msg_id: str, scene: str = "") -> None:
         key = str(msg_id or "")
         if not key:
             return
         now = time.monotonic()
-        used = self._seen.get(key, (now, 0))[1]
-        self._seen[key] = (now, used)
+        scene_key = str(scene or "")
+        used = self._seen.get(key, (now, 0, scene_key))[1]
+        self._seen[key] = (now, used, scene_key)
         if len(self._seen) > self.limit:
             self._prune(now)
 
@@ -45,25 +48,62 @@ class PassiveWindow:
         entry = self._seen.get(key)
         if entry is None:
             return 0
-        marked, used = entry
+        marked, used, _ = entry
         if time.monotonic() - marked > self.window:
             self._seen.pop(key, None)
             return 0
         return max(self.reply_limit - used, 0)
 
     def take(self, msg_id: str, count: int = 1) -> bool:
-        """预占被动额度；并发下发时也不会超过平台上限。"""
+        """预占被动额度；额度用完就从缓存池移出。"""
         need = max(int(count), 1)
         key = str(msg_id or "")
         if self.remaining(key) < need:
             return False
-        marked, used = self._seen[key]
-        self._seen[key] = (marked, used + need)
+        marked, used, scene = self._seen[key]
+        used += need
+        if used >= self.reply_limit:
+            self._seen.pop(key, None)
+        else:
+            self._seen[key] = (marked, used, scene)
         return True
 
+    def pick_available(self, msg_id: str, scene: str) -> str:
+        """从同会话缓存池里取入站时间最新且仍有额度的 ID。"""
+        key = str(msg_id or "")
+        if not key or not scene:
+            return ""
+        now = time.monotonic()
+        best_key, best_ts = "", -1.0
+        for candidate, (marked, used, candidate_scene) in self._seen.items():
+            if candidate == key or candidate_scene != scene:
+                continue
+            if now - marked > self.window or used >= self.reply_limit:
+                continue
+            if marked > best_ts:
+                best_key, best_ts = candidate, marked
+        return best_key
+
+    def acquire(self, msg_id: str, scene: str = "") -> str:
+        """优先用原 ID；不可用时换同会话最近可用的 ID；都没有返回空串。"""
+        key = str(msg_id or "")
+        if not key:
+            return ""
+        if self.take(key):
+            return key
+        fallback = self.pick_available(key, scene)
+        if fallback and self.take(fallback):
+            return fallback
+        return ""
+
     def _prune(self, now: float) -> None:
-        for key in [k for k, (ts, _) in self._seen.items() if now - ts > self.window]:
+        for key in [k for k, (ts, _, _) in self._seen.items() if now - ts > self.window]:
             self._seen.pop(key, None)
+        overflow = len(self._seen) - self.limit
+        if overflow > 0:
+            oldest = sorted(self._seen, key=lambda k: self._seen[k][0])[:overflow]
+            for key in oldest:
+                self._seen.pop(key, None)
 
 
 class ProactiveLane:

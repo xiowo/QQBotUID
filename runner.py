@@ -280,6 +280,20 @@ def _reply_target_type(user_type: str) -> Optional[str]:
     return _REPLY_TARGETS.get(str(user_type or ""))
 
 
+def _receive_scene(receive: MessageReceive) -> str:
+    """入站消息所属会话，限定被动 ID 缓存池的复用范围。"""
+    target_type = _reply_target_type(receive.user_type)
+    target_id = receive.user_id if target_type == "direct" else receive.group_id
+    return f"{target_type}:{target_id}" if target_type and target_id else ""
+
+
+def _send_scene(send: MessageSend) -> str:
+    """下发消息所属会话。"""
+    if not send.target_type or not send.target_id:
+        return ""
+    return f"{send.target_type}:{send.target_id}"
+
+
 def _is_lifecycle(receive: MessageReceive) -> bool:
     content = receive.content or []
     return bool(content) and str(content[0].type or "").startswith("meta-")
@@ -726,7 +740,7 @@ class QQBotUID:
             if self._skip_filtered(payload):
                 return
             self._warn_unresolved_reference(payload, receive)
-            self.passive.mark(receive.msg_id)
+            self.passive.mark(receive.msg_id, _receive_scene(receive))
             self._record_union_openid(payload)
             self.users.observe(receive)
             await self.maybe_input_notify(receive)
@@ -884,7 +898,7 @@ class QQBotUID:
                 t("[QQBotUID] Webhook 事件 {event_type}: {raw}", event_type=body.get("t"), raw=brief_text(body, 1500))
             )
             if not self._skip_filtered(body):
-                self.passive.mark(receive.msg_id)
+                self.passive.mark(receive.msg_id, _receive_scene(receive))
                 self._record_union_openid(body)
                 self.users.observe(receive)
                 await self.maybe_input_notify(receive)
@@ -963,14 +977,15 @@ class QQBotUID:
         if endpoint is None:
             _warn_no_target(send)
             return None
-        if not self.passive.take(send.msg_id):
+        effective_id = self.passive.acquire(send.msg_id, _send_scene(send))
+        if not effective_id:
             self._log_passive_fallback(send)
             self.proactive.submit(send.target_type, lambda: self.send_proactive(send, endpoint))
             return _Deferred()
-        streamed = await self.try_stream(send, send.msg_id)
+        streamed = await self.try_stream(send, effective_id)
         if streamed is not None:
             return streamed
-        return await self.post_message(send, endpoint, send.msg_id)
+        return await self.post_message(send, endpoint, effective_id)
 
     async def try_stream(self, send: MessageSend, msg_id: str) -> Optional[str]:
         """私聊纯文本走流式；返回 message_id 表示已发出，``None`` 表示该回退普通发送。"""
@@ -1015,11 +1030,11 @@ class QQBotUID:
         return None
 
     def _log_passive_fallback(self, send: MessageSend) -> None:
-        """被动额度用完（5 次）或已过期，改走主动通道。"""
+        """原 ID 与同会话缓存池都没有可用额度，改走主动通道。"""
         if not send.msg_id:
             return
         logger.debug(
-            f"[QQBotUID] 被动回复不可用（剩余 {self.passive.remaining(send.msg_id)} 次），"
+            f"[QQBotUID] 同会话无可用被动 ID（原 ID 剩余 {self.passive.remaining(send.msg_id)} 次），"
             f"转主动发送: {send.target_type}/{send.target_id} msg_id={send.msg_id}"
         )
 
@@ -1157,17 +1172,19 @@ class QQBotUID:
             _warn_no_target(send)
             return None
         message_ids: List[str] = []
+        scene = _send_scene(send)
         for item in normalize_node_items(items):
-            if msg_id and self.passive.take(msg_id):
+            effective_id = self.passive.acquire(msg_id, scene)
+            if effective_id:
                 part = MessageSend(
                     bot_id=send.bot_id,
                     bot_self_id=send.bot_self_id,
-                    msg_id=send.msg_id,
+                    msg_id=effective_id,
                     target_type=send.target_type,
                     target_id=send.target_id,
                     content=[item],
                 )
-                message_id = await self.post_message(part, endpoint, msg_id)
+                message_id = await self.post_message(part, endpoint, effective_id)
                 if message_id:
                     message_ids.append(message_id)
                 continue
