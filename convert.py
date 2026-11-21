@@ -950,6 +950,9 @@ def normalize_button(button: Any) -> Optional[Dict[str, Any]]:
             permission["specify_user_ids"] = specify_user_ids
         normalized["permission"] = permission
 
+    for name in ("group_id", "id", "smallbtn", "content", "confirm_text", "cancel_text"):
+        if button.get(name) is not None:
+            normalized[name] = button[name]
     return normalized
 
 
@@ -957,9 +960,11 @@ def build_keyboard(rows: List[List[Dict[str, Any]]]) -> Dict[str, Any]:
     """核心的按钮行 → QQ 官方 keyboard"""
     built_rows: List[Dict[str, Any]] = []
     index = 0
+    smallbtn = False
     for row in rows:
         built_buttons: List[Dict[str, Any]] = []
         for button in row:
+            smallbtn = smallbtn or bool(button.get("smallbtn"))
             label = str(button.get("text") or "")
             action: Dict[str, Any] = {
                 "type": button.get("type", 2),
@@ -973,21 +978,32 @@ def build_keyboard(rows: List[List[Dict[str, Any]]]) -> Dict[str, Any]:
                     action["enter"] = True
                 if button.get("reply"):
                     action["reply"] = True
-            built_buttons.append(
-                {
-                    "id": str(index),
-                    "render_data": {
-                        "label": label,
-                        "visited_label": str(button.get("show") or label),
-                        "style": button.get("style", 1),
-                    },
-                    "action": action,
+
+            item = {
+                "id": str(button.get("id") or index),
+                "render_data": {
+                    "label": label,
+                    "visited_label": str(button.get("show") or label),
+                    "style": button.get("style", 1),
+                },
+                "action": action,
+            }
+            if button.get("group_id"):
+                item["group_id"] = str(button["group_id"])
+            if button.get("content"):
+                action["modal"] = {
+                    "content": str(button["content"]),
+                    "confirm_text": str(button.get("confirm_text") or "是"),
+                    "cancel_text": str(button.get("cancel_text") or "否"),
                 }
-            )
+            built_buttons.append(item)
             index += 1
         if built_buttons:
             built_rows.append({"buttons": built_buttons})
-    return {"content": {"rows": built_rows}}
+    content: Dict[str, Any] = {"rows": built_rows}
+    if smallbtn:
+        content["style"] = {"font_size": "small"}
+    return {"content": content}
 
 
 def _message_path(send: MessageSend) -> Optional[str]:
