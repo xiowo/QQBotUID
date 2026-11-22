@@ -19,6 +19,7 @@ from .qr_bind import poll_bind_task, create_bind_task
 from .startup import qqbotuid_runtime
 from .bots_store import BotRow, load_rows, save_rows, delete_row, save_bot_profile, upsert_bound_bot
 from .error_store import ErrorBot, ErrorResponse, QQBotUIDAPIError
+from .custom_config import decoration_payload, save_custom_config, delete_custom_config
 
 WEB_DIR = Path(__file__).with_name("web")
 
@@ -132,6 +133,33 @@ async def qqbotuid_errors(
 @api.get("/bots")
 async def qqbotuid_bots():
     return {"status": 0, "msg": "ok", "data": {"bots": _rows_payload()}}
+
+
+@api.get("/decoration")
+async def qqbotuid_get_decoration(appid: str = Query("", max_length=128)):
+    """消息追加配置：按 AppID 区分；本地保存，不进早柚插件配置也不提交 QQ。"""
+    return {"status": 0, "msg": "ok", "data": decoration_payload(appid.strip())}
+
+
+@api.post("/decoration")
+async def qqbotuid_save_decoration(
+    data: dict[str, Any], appid: str = Query("", max_length=128)
+):
+    target = appid.strip() or str(data.get("appid") or "").strip()
+    payload = data.get("config") if isinstance(data.get("config"), dict) else data
+    ok, error = await asyncio.to_thread(save_custom_config, payload, target)
+    if not ok:
+        return {"status": 1, "msg": error, "data": None}
+    return {"status": 0, "msg": "ok", "data": decoration_payload(target)}
+
+
+@api.delete("/decoration/{appid}")
+async def qqbotuid_delete_decoration(appid: str):
+    """删除某个机器人的单独配置，让它重新继承全局默认。"""
+    removed = await asyncio.to_thread(delete_custom_config, appid.strip())
+    if not removed:
+        return {"status": 1, "msg": "没有找到该机器人的单独配置", "data": None}
+    return {"status": 0, "msg": "ok", "data": decoration_payload("")}
 
 
 def _find_row(appid: str) -> BotRow | None:

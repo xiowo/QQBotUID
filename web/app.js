@@ -6,6 +6,7 @@
   var POLL_INTERVAL_MS = 2000;
   var panelController;
   var errorController;
+  var decorController;
   var activePage = 'bots';
   var state = {
     bots: [],
@@ -128,6 +129,7 @@
       panelController.setBots(state.bots);
       if (activePage === 'panels') panelController.open();
     }
+    if (decorController) decorController.setBots(state.bots);
     if (!state.bots.length) {
       botList.innerHTML = '<div class="empty">还没有 Bot。点右上角「扫码添加」用手机 QQ 授权，'
         + '扫完自动写入 AppID / Secret 并接入核心。</div>';
@@ -534,35 +536,59 @@
 
   panelController = window.QQBotPanels({ api: api, toast: showToast, confirm: openConfirm });
   errorController = window.QQBotErrors({ api: api, toast: showToast });
+  decorController = window.QQBotDecoration({ api: api, toast: showToast, confirm: openConfirm });
 
-  function switchPage(page) {
-    if (panelController.busy()) {
-      showToast('指令面板请求尚未结束，请稍候');
-      return;
-    }
+  var PAGE_TITLES = {
+    bots: ['Bot 管理', '管理接入早柚核心的 QQ 官方机器人'],
+    errors: ['错误统计', '查看 QQ API 请求失败记录与错误类型'],
+    panels: ['指令面板', '按机器人和场景配置 QQ 官方指令面板'],
+    decoration: ['消息追加', '配置每条消息自动追加的按钮与底部内容'],
+  };
+  var PAGE_NAV = { bots: 'navBots', errors: 'navErrors', panels: 'navPanels', decoration: 'navDecoration' };
+
+  function doSwitchPage(page) {
     activePage = page;
-    ['bots', 'errors', 'panels'].forEach(function (name) {
+    Object.keys(PAGE_NAV).forEach(function (name) {
       $('page-' + name).classList.toggle('active', name === page);
-      var nav = $({ bots: 'navBots', errors: 'navErrors', panels: 'navPanels' }[name]);
+      var nav = $(PAGE_NAV[name]);
       nav.classList.toggle('active', name === page);
       if (name === page) nav.setAttribute('aria-current', 'page');
       else nav.removeAttribute('aria-current');
     });
-    var isPanel = page === 'panels';
-    var isErrors = page === 'errors';
-    document.querySelector('.inner').classList.toggle('panel-wide', isPanel);
-    document.querySelector('.inner').classList.toggle('error-wide', isErrors);
+    var inner = document.querySelector('.inner');
+    inner.classList.toggle('panel-wide', page === 'panels');
+    inner.classList.toggle('error-wide', page === 'errors');
+    inner.classList.toggle('decoration-wide', page === 'decoration');
     $('openBindBtn').hidden = page !== 'bots';
     $('refreshBtn').hidden = page !== 'bots';
-    $('pageTitle').textContent = isErrors ? '错误统计' : isPanel ? '指令面板' : 'Bot 管理';
-    $('pageSubtitle').textContent = isErrors ? '查看 QQ API 请求失败记录与错误类型' : isPanel ? '按机器人和场景配置 QQ 官方指令面板' : '管理接入早柚核心的 QQ 官方机器人';
+    $('pageTitle').textContent = PAGE_TITLES[page][0];
+    $('pageSubtitle').textContent = PAGE_TITLES[page][1];
     updateDirty();
-    if (isPanel) panelController.open();
-    if (isErrors) errorController.open();
+    if (page === 'panels') panelController.open();
+    if (page === 'decoration') decorController.open();
+    if (page === 'errors') errorController.open();
+  }
+
+  function switchPage(page) {
+    if (panelController.busy() || decorController.busy()) {
+      showToast('配置请求尚未结束，请稍候');
+      return;
+    }
+    if (activePage === 'decoration' && page !== 'decoration' && decorController.dirty()) {
+      openConfirm({
+        title: '放弃未提交的修改？',
+        text: '消息追加配置有未保存的修改，离开后这些修改会丢失。',
+        okText: '放弃修改',
+        onOk: function () { doSwitchPage(page); },
+      });
+      return;
+    }
+    doSwitchPage(page);
   }
   on('navBots', 'click', function () { switchPage('bots'); });
   on('navErrors', 'click', function () { switchPage('errors'); });
   on('navPanels', 'click', function () { switchPage('panels'); });
+  on('navDecoration', 'click', function () { switchPage('decoration'); });
 
   var THEME_KEY = 'qqbotuid.theme';
   var themeMode = 'global';

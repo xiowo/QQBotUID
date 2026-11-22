@@ -43,6 +43,13 @@
                     </svg>
                     <span>指令面板</span>
                 </button>
+                <button id="navDecoration" class="nav-item" type="button">
+                    <svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true">
+                        <path d="m12 3 1.6 4.4L18 9l-4.4 1.6L12 15l-1.6-4.4L6 9l4.4-1.6L12 3Z" />
+                        <path d="m18 15 .8 2.2L21 18l-2.2.8L18 21l-.8-2.2L15 18l2.2-.8L18 15Z" />
+                    </svg>
+                    <span>消息追加</span>
+                </button>
             </nav>
             <div class="sidebar-footer">
                 <div class="status-pill"><span class="status-dot"></span><span id="footerStatus">正在读取</span></div>
@@ -164,6 +171,33 @@
                             </section>
                         </fieldset>
                     </section>
+                    <section id="page-decoration" class="page" aria-label="消息追加配置">
+                        <section id="messageDecor" class="panel-box message-decor" aria-label="消息追加配置">
+                            <div class="panel-section-head">
+                                <div><h2>消息追加配置</h2><p class="hint">保存后立即生效。仅作用于纯文本和 Markdown 消息；node 子消息不加。</p></div>
+                                <span id="decorDirty" class="tag" hidden>未保存</span>
+                            </div>
+                            <div class="decor-scope">
+                                <label class="field decor-bot-field"><span>配置对象</span><div id="decorBotSelect"></div></label>
+                                <span id="decorScopeTag" class="tag" hidden>单独配置</span>
+                                <button id="decorInherit" class="btn" type="button" hidden>恢复继承全局默认</button>
+                            </div>
+                            <p id="decorScopeHint" class="hint decor-scope-hint"></p>
+                            <div class="decor-switches">
+                                <label class="decor-switch"><span><strong>自动追加按钮</strong><small>默认关闭；开启后按下面配置的按钮行追加</small></span><span class="toggle"><input id="decorButtonsEnabled" type="checkbox" aria-label="自动追加按钮" /><i></i></span></label>
+                                <label class="decor-switch"><span><strong>覆盖原按钮</strong><small>默认关闭；关闭时在原有按钮后面追加</small></span><span class="toggle"><input id="decorButtonsOverride" type="checkbox" aria-label="覆盖原按钮" /><i></i></span></label>
+                                <label class="decor-switch"><span><strong>消息底部追加内容</strong><small>默认关闭；支持文本或 Markdown</small></span><span class="toggle"><input id="decorFooterEnabled" type="checkbox" aria-label="消息底部追加内容" /><i></i></span></label>
+                            </div>
+                            <label id="decorFooterField" class="field decor-footer"><span>底部内容</span><textarea id="decorFooterText" rows="3" placeholder="支持 Markdown，例如：> 点击[支持一下](mqqapi://aio/inlinecmd?command=支持沫狐&amp;enter=false&amp;reply=false)"></textarea><small>只在上面开关打开时生效；Markdown 语法仅在 Markdown 消息里渲染。流式回复也会带上这段内容。</small></label>
+                            <div class="panel-section-head decor-buttons-head">
+                                <div><h3>按钮配置 <small id="decorButtonCount">0 行 / 0 个按钮</small></h3><p class="hint">点下面的按钮预览即可编辑。改完记得点保存配置。</p></div>
+                                <div class="panel-actions"><button id="decorAddRow" class="btn" type="button">＋ 添加一行</button></div>
+                            </div>
+                            <div id="decorRows" class="decor-rows"></div>
+                            <div class="panel-save-row"><button id="decorReset" class="btn danger" type="button">恢复默认</button><button id="decorSave" class="btn primary" type="button">保存配置</button></div>
+                            <p class="hint decor-footnote">「全局默认」作用于所有没单独配置的机器人；给某个机器人保存一次配置后，就只影响它自己。</p>
+                        </section>
+                    </section>
                 </div>
             </section>
         </main>
@@ -250,6 +284,7 @@
     <script>
         document.write('<script src="./menu.js?v=' + Date.now() + '"><\/script>');
         document.write('<script src="./panels.js?v=' + Date.now() + '"><\/script>');
+        document.write('<script src="./decoration.js?v=' + Date.now() + '"><\/script>');
         document.write('<script src="./errors.js?v=' + Date.now() + '"><\/script>');
         document.write('<script src="./app.js?v=' + Date.now() + '"><\/script>');
     </script>

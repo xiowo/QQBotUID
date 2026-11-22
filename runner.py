@@ -72,6 +72,7 @@ from .group_info import ensure_table as ensure_group_table
 from .union_info import UnionRecorder, ensure_table as ensure_union_table
 from .core_bridge import CoreBridge
 from .error_store import ensure_table as ensure_error_table
+from .custom_config import message_decoration
 
 OP_DISPATCH = 0
 OP_HEARTBEAT = 1
@@ -170,6 +171,37 @@ _PLAIN_LABELS = {"record": "[语音]", "video": "[视频]", "file": "[文件]"}
 _MEDIA_FILE_TYPES = {"record": FILE_TYPE_AUDIO, "video": FILE_TYPE_VIDEO}
 # 这些走流式
 _STREAMABLE_TYPES = {"text", "markdown", "at"}
+
+
+def _merge_button_data(existing: Any, auto_rows: List[List[Dict[str, Any]]]) -> Any:
+    """已有按钮后追加配置按钮；预构造 keyboard 的顶层字段原样保留。"""
+    if not existing:
+        return auto_rows
+    if isinstance(existing, dict) and isinstance(existing.get("content"), dict):
+        content = dict(existing["content"])
+        rows = list(content.get("rows") or [])
+        rows.extend(build_keyboard(auto_rows)["content"]["rows"])
+        content["rows"] = rows
+        return {**existing, "content": content}
+    rows = normalize_buttons(existing) or []
+    return rows + auto_rows
+
+
+def _append_footer_text(payload: Dict[str, Any], decoration: Any) -> None:
+    """把底部文案拼进文本或 markdown 正文"""
+    if not decoration.footer_enabled or not decoration.footer_text:
+        return
+    footer = decoration.footer_text.strip()
+    if not footer:
+        return
+    if payload.get("msg_type") == 2 and isinstance(payload.get("markdown"), dict):
+        body = payload["markdown"]
+        base = str(body.get("content") or "").rstrip()
+        body["content"] = f"{base}\n\n{footer}" if base else footer
+        return
+    if isinstance(payload.get("content"), str):
+        base = payload["content"].rstrip()
+        payload["content"] = f"{base}\n{footer}" if base else footer
 
 
 def _pick_media(items: List[Message]) -> Tuple[Optional[Message], int]:
@@ -992,6 +1024,9 @@ class QQBotUID:
         setting = stream_setting()
         if setting is None or send.target_type != "direct" or not send.target_id:
             return None
+        decoration = message_decoration(self.config.appid)
+        if decoration.auto_buttons_enabled and decoration.buttons:
+            return None
         if _has_image(send):
             logger.debug("[QQBotUID] 回复里带图片，不走流式，直接普通发送")
             return None
@@ -1007,6 +1042,9 @@ class QQBotUID:
             return None
         if not any(item.type == "markdown" for item in send.content or []):
             content = _md_hard_break(content)
+        if decoration.footer_enabled and decoration.footer_text.strip():
+            footer = decoration.footer_text.strip()
+            content = f"{content.rstrip()}\n\n{footer}" if content.strip() else footer
         chunk_size = setting.chunk_size
         if chunk_size >= len(content):
             chunk_size = max(1, (len(content) + 1) // 2)
@@ -1130,14 +1168,18 @@ class QQBotUID:
         finally:
             await self.send_recall_ack(send, message_id)
 
-    async def post_message(self, send: MessageSend, endpoint: str, msg_id: str) -> Optional[str]:
-        message_id, _ = await self.post_message_detail(send, endpoint, msg_id)
+    async def post_message(
+        self, send: MessageSend, endpoint: str, msg_id: str, decorate: bool = True
+    ) -> Optional[str]:
+        message_id, _ = await self.post_message_detail(send, endpoint, msg_id, decorate)
         return message_id
 
-    async def post_message_detail(self, send: MessageSend, endpoint: str, msg_id: str) -> Tuple[Optional[str], str]:
+    async def post_message_detail(
+        self, send: MessageSend, endpoint: str, msg_id: str, decorate: bool = True
+    ) -> Tuple[Optional[str], str]:
         """发送一帧，返回 (message_id, error)；error 为空串表示成功。"""
         try:
-            payload = await self.build_send_payload(send, msg_id)
+            payload = await self.build_send_payload(send, msg_id, decorate)
             markdown_body = payload.get("markdown")
             has_markdown = isinstance(markdown_body, dict) and bool(str(markdown_body.get("content") or "").strip())
             has_card = bool(payload.get("card"))
@@ -1184,7 +1226,7 @@ class QQBotUID:
                     target_id=send.target_id,
                     content=[item],
                 )
-                message_id = await self.post_message(part, endpoint, effective_id)
+                message_id = await self.post_message(part, endpoint, effective_id, decorate=False)
                 if message_id:
                     message_ids.append(message_id)
                 continue
@@ -1203,18 +1245,38 @@ class QQBotUID:
             target_id=send.target_id,
             content=[item],
         )
-        await self.post_message(part, endpoint, "")
+        await self.post_message(part, endpoint, "", decorate=False)
 
-    async def build_send_payload(self, send: MessageSend, msg_id: str) -> Dict[str, Any]:
+    async def build_send_payload(
+        self, send: MessageSend, msg_id: str, decorate: bool = True
+    ) -> Dict[str, Any]:
         assert send.content is not None
         platform = self.config.platform_bot_id
         use_buttons = _platform_selected("SendButtonsPlatform", platform)
+        decoration = message_decoration(self.config.appid)
+
+        def finish(result: Dict[str, Any]) -> Dict[str, Any]:
+            """只给纯文本 / Markdown 追加内容"""
+            self._attach_buttons(result, buttons, use_buttons)
+            if decorate:
+                _append_footer_text(result, decoration)
+            return result
+
         if any(item.type == "template_markdown" for item in send.content):
             logger.debug("[QQBotUID] 不支持 markdown 模板消息，该段已跳过")
 
         markdown = next((m for m in send.content if m.type == "markdown"), None)
         image = next((m for m in send.content if m.type == "image" and isinstance(m.data, str)), None)
         buttons = next((m for m in send.content if m.type in {"buttons", "template_buttons"}), None)
+        auto_rows = decoration.buttons if decorate and decoration.auto_buttons_enabled else []
+        if auto_rows:
+            original = buttons if use_buttons else None
+            if decoration.auto_buttons_override:
+                buttons = Message(type="buttons", data=auto_rows)
+            else:
+                merged = _merge_button_data(original.data if original else None, auto_rows)
+                buttons = Message(type="buttons", data=merged)
+            use_buttons = True
         card = next((m for m in send.content if m.type == "card" and isinstance(m.data, dict)), None)
         media, media_type = _pick_media(send.content)
         target_type = send.target_type or "direct"
@@ -1261,13 +1323,11 @@ class QQBotUID:
                 ).strip()
                 if rest:
                     payload["content"] = rest
-                self._attach_buttons(payload, buttons, use_buttons)
                 return payload
 
         if use_md:
             payload.update({"msg_type": 2, "markdown": await self._build_markdown(send, markdown, text)})
-            self._attach_buttons(payload, buttons, use_buttons)
-            return payload
+            return finish(payload)
 
         if image and send.target_id:
             file_info = await self.sender.upload_media(
@@ -1277,12 +1337,10 @@ class QQBotUID:
             )
             if file_info:
                 payload.update({"msg_type": 7, "media": {"file_info": file_info}, "content": text})
-                self._attach_buttons(payload, buttons, use_buttons)
                 return payload
 
         payload.update({"msg_type": 0, "content": text})
-        self._attach_buttons(payload, buttons, use_buttons)
-        return payload
+        return finish(payload)
 
     async def _build_markdown(self, send: MessageSend, markdown: Optional[Message], text: str) -> Dict[str, Any]:
         body = _markdown_body(markdown)
