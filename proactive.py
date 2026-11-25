@@ -12,11 +12,11 @@ ProactiveJob = Callable[[], Awaitable[Any]]
 # 群内回复与私聊回复的被动
 PASSIVE_WINDOW_SECONDS = 3600.0
 PASSIVE_REPLY_LIMIT = 5
-PASSIVE_TRACK_LIMIT = 20
+PASSIVE_TRACK_LIMIT = 3
 
 
 class PassiveWindow:
-    """按会话缓存最近入站的 msg_id。"""
+    """按会话缓存最近入站的 msg_id，容量上限按会话各自计算。"""
 
     def __init__(
         self,
@@ -28,6 +28,18 @@ class PassiveWindow:
         self.limit = limit
         self.reply_limit = max(int(reply_limit), 1)
         self._seen: Dict[str, Tuple[float, int, str]] = {}
+        self._by_scene: Dict[str, Set[str]] = {}
+
+    def _remove(self, key: str) -> None:
+        entry = self._seen.pop(key, None)
+        if entry is None:
+            return
+        bucket = self._by_scene.get(entry[2])
+        if bucket is None:
+            return
+        bucket.discard(key)
+        if not bucket:
+            self._by_scene.pop(entry[2], None)
 
     def mark(self, msg_id: str, scene: str = "") -> None:
         key = str(msg_id or "")
@@ -35,10 +47,18 @@ class PassiveWindow:
             return
         now = time.monotonic()
         scene_key = str(scene or "")
-        used = self._seen.get(key, (now, 0, scene_key))[1]
+        hit = self._seen.get(key)
+        if hit is not None and hit[2] != scene_key:
+            self._remove(key)
+        used = hit[1] if hit is not None else 0
         self._seen[key] = (now, used, scene_key)
-        if len(self._seen) > self.limit:
-            self._prune(now)
+        bucket = self._by_scene.setdefault(scene_key, set())
+        bucket.add(key)
+        overflow = len(bucket) - self.limit
+        if overflow > 0:
+            oldest = sorted(bucket, key=lambda k: self._seen[k][0])[:overflow]
+            for old in oldest:
+                self._remove(old)
 
     def remaining(self, msg_id: str) -> int:
         """还能被动回复几次；0 表示必须降级主动。"""
@@ -50,7 +70,7 @@ class PassiveWindow:
             return 0
         marked, used, _ = entry
         if time.monotonic() - marked > self.window:
-            self._seen.pop(key, None)
+            self._remove(key)
             return 0
         return max(self.reply_limit - used, 0)
 
@@ -63,7 +83,7 @@ class PassiveWindow:
         marked, used, scene = self._seen[key]
         used += need
         if used >= self.reply_limit:
-            self._seen.pop(key, None)
+            self._remove(key)
         else:
             self._seen[key] = (marked, used, scene)
         return True
@@ -73,11 +93,18 @@ class PassiveWindow:
         key = str(msg_id or "")
         if not key or not scene:
             return ""
+        bucket = self._by_scene.get(scene)
+        if not bucket:
+            return ""
         now = time.monotonic()
         best_key, best_ts = "", -1.0
-        for candidate, (marked, used, candidate_scene) in self._seen.items():
-            if candidate == key or candidate_scene != scene:
+        for candidate in bucket:
+            if candidate == key:
                 continue
+            entry = self._seen.get(candidate)
+            if entry is None:
+                continue
+            marked, used, _ = entry
             if now - marked > self.window or used >= self.reply_limit:
                 continue
             if marked > best_ts:
@@ -98,12 +125,7 @@ class PassiveWindow:
 
     def _prune(self, now: float) -> None:
         for key in [k for k, (ts, _, _) in self._seen.items() if now - ts > self.window]:
-            self._seen.pop(key, None)
-        overflow = len(self._seen) - self.limit
-        if overflow > 0:
-            oldest = sorted(self._seen, key=lambda k: self._seen[k][0])[:overflow]
-            for key in oldest:
-                self._seen.pop(key, None)
+            self._remove(key)
 
 
 class ProactiveLane:
