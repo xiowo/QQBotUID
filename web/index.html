@@ -63,6 +63,7 @@
                     <p id="pageSubtitle">管理接入早柚核心的 QQ 官方机器人</p>
                 </div>
                 <div class="top-actions">
+                    <button id="openManualBtn" class="btn" type="button">手动添加</button>
                     <button id="openBindBtn" class="btn primary" type="button">扫码添加</button>
                     <button id="refreshBtn" class="icon-btn" type="button" title="刷新" aria-label="刷新">↻</button>
                     <div id="themeSelect" class="theme-select"></div>
@@ -227,6 +228,33 @@
                     </div>
                 </div>
             </div>
+        </div>
+    </div>
+
+    <div id="manualModal" class="modal" hidden>
+        <div class="modal-mask" data-close="1"></div>
+        <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="manualTitle">
+            <header class="modal-head">
+                <div>
+                    <h2 id="manualTitle">手动添加机器人</h2>
+                    <p>已有 AppID / Secret 时可直接填写，无需扫码授权</p>
+                </div>
+                <button id="closeManual" class="icon-btn" type="button" title="关闭" aria-label="关闭">✕</button>
+            </header>
+            <form id="manualForm" novalidate>
+                <div class="modal-body manual-body">
+                    <p id="manualError" class="manual-error" role="alert" hidden></p>
+                    <label class="field"><span>AppID <b class="req">*</b></span><input id="manualAppid" type="text" autocomplete="off" placeholder="QQ 开放平台应用的 AppID" /></label>
+                    <label class="field"><span>密钥 Secret <b class="req">*</b></span><input id="manualSecret" type="password" autocomplete="new-password" placeholder="与 AppID 对应的 AppSecret" /></label>
+                    <label class="field"><span>备注名称 <small>选填</small></span><input id="manualName" type="text" autocomplete="off" placeholder="留空则使用 QQ 接口返回的名称" /></label>
+                    <div class="field"><span>运行模式</span><div id="manualModeSelect"></div></div>
+                    <label class="manual-enabled"><span>添加后立即启用</span><span class="toggle"><input id="manualEnabled" type="checkbox" checked /><i></i></span></label>
+                </div>
+                <footer class="modal-foot">
+                    <button id="cancelManual" class="btn" type="button">取消</button>
+                    <button id="manualSubmit" class="btn primary" type="submit">添加机器人</button>
+                </footer>
+            </form>
         </div>
     </div>
 

@@ -18,6 +18,10 @@
     timer: null,
     busy: false,
   };
+  var manual = {
+    mode: 'WebSocket',
+    busy: false,
+  };
   var detail = {
     appid: '',
   };
@@ -131,8 +135,8 @@
     }
     if (decorController) decorController.setBots(state.bots);
     if (!state.bots.length) {
-      botList.innerHTML = '<div class="empty">还没有 Bot。点右上角「扫码添加」用手机 QQ 授权，'
-        + '扫完自动写入 AppID / Secret 并接入核心。</div>';
+      botList.innerHTML = '<div class="empty">还没有 Bot。点右上角「手动添加」填写 QQ 号 / AppID / Secret，'
+        + '或点「扫码添加」用手机 QQ 授权后自动写入。</div>';
       renderCount();
       updateDirty();
       return;
@@ -247,7 +251,7 @@
     confirmBox.onOk = null;
     $('confirmOk').disabled = false;
     $('confirmModal').hidden = true;
-    if ($('bindModal').hidden && $('detailModal').hidden) document.body.classList.remove('modal-open');
+    if ($('bindModal').hidden && $('manualModal').hidden && $('detailModal').hidden) document.body.classList.remove('modal-open');
   }
 
   async function runConfirm() {
@@ -281,7 +285,7 @@
     var dirty = state.saved !== '' && snapshot() !== state.saved;
     openConfirm({
       title: '删除机器人',
-      subtitle: '删除后不可撤销，需要重新扫码才能加回来',
+      subtitle: '删除后不可撤销，需要重新扫码或手动添加才能加回来',
       text: '确定要删除「' + name + '」吗？它的 AppID / Secret 和机器人资料会一起移除。',
       hint: dirty ? '当前还有未保存的修改，删除后这些修改也会一并丢弃。' : '',
       okText: '删除',
@@ -500,9 +504,115 @@
     stopPolling();
     bind.taskId = '';
     $('bindModal').hidden = true;
-    document.body.classList.remove('modal-open');
+    if ($('manualModal').hidden && $('detailModal').hidden && $('confirmModal').hidden) {
+      document.body.classList.remove('modal-open');
+    }
   }
 
+  function setManualError(text) {
+    var el = $('manualError');
+    el.textContent = text || '';
+    el.hidden = !text;
+  }
+
+  function renderManualMode() {
+    if (!window.QQBotSelect) return;
+    window.QQBotSelect(
+      $('manualModeSelect'),
+      [['WebSocket', 'WebSocket'], ['Webhook', 'Webhook']],
+      manual.mode,
+      function (value) { manual.mode = value; },
+      '运行模式'
+    );
+  }
+
+  function openManual() {
+    if (manual.busy) return;
+    $('manualForm').reset();
+    manual.mode = 'WebSocket';
+    renderManualMode();
+    setManualError('');
+    $('manualModal').hidden = false;
+    document.body.classList.add('modal-open');
+    $('manualAppid').focus();
+  }
+
+  function closeManual(force) {
+    if (manual.busy && force !== true) return;
+    $('manualModal').hidden = true;
+    if ($('bindModal').hidden && $('detailModal').hidden && $('confirmModal').hidden) {
+      document.body.classList.remove('modal-open');
+    }
+  }
+
+  async function submitManual(event) {
+    event.preventDefault();
+    if (manual.busy) return;
+    var appid = $('manualAppid').value.trim();
+    var secret = $('manualSecret').value.trim();
+    var botName = $('manualName').value.trim();
+    if (!appid) {
+      setManualError('请填写 AppID');
+      $('manualAppid').focus();
+      return;
+    }
+    if (!secret) {
+      setManualError('请填写密钥 Secret');
+      $('manualSecret').focus();
+      return;
+    }
+    setManualError('');
+    manual.busy = true;
+    var button = $('manualSubmit');
+    button.disabled = true;
+    button.textContent = '添加中…';
+    try {
+      var data = await api('/bots/manual', {
+        method: 'POST',
+        body: JSON.stringify({
+          appid: appid,
+          secret: secret,
+          bot_name: botName,
+          mode: manual.mode,
+          enabled: $('manualEnabled').checked,
+        }),
+      });
+      state.bots = (data && data.bots) || [];
+      state.saved = snapshot();
+      renderBots();
+      $('manualSecret').value = '';
+      closeManual(true);
+      var tips = [(data.created ? '已添加机器人 ' : '已更新机器人 ') + data.appid];
+      var incomplete = false;
+      if (!data.uin) {
+        tips.push('未能获取机器人 QQ 号，请确认 AppID / Secret');
+        incomplete = true;
+      } else if (data.profile_ok === false) {
+        tips.push('未能获取完整资料，请确认 AppID / Secret');
+        incomplete = true;
+      }
+      if (data.reloaded === false) {
+        tips.push('请重启核心后生效');
+        incomplete = true;
+      }
+      showToast(tips.join('；'), incomplete);
+    } catch (err) {
+      setManualError(err.message || '添加失败，请稍后重试');
+      showToast(err.message || '添加失败', true);
+    } finally {
+      manual.busy = false;
+      button.disabled = false;
+      button.textContent = '添加机器人';
+    }
+  }
+
+  on('openManualBtn', 'click', openManual);
+  on('closeManual', 'click', function () { closeManual(); });
+  on('cancelManual', 'click', function () { closeManual(); });
+  on('manualForm', 'submit', submitManual);
+  on('manualModal', 'click', function (event) {
+    if (event.target.dataset.close) closeManual();
+  });
   on('openBindBtn', 'click', openBind);
   on('regenBind', 'click', startBind);
   on('closeBind', 'click', closeBind);
@@ -530,6 +640,7 @@
     if (event.key !== 'Escape') return;
     if (!$('confirmModal').hidden) closeConfirm();
     else if (!$('bindModal').hidden) closeBind();
+    else if (!$('manualModal').hidden) closeManual();
     else if (!$('detailModal').hidden) closeDetail();
     else closeSelects(null);
   });
@@ -559,6 +670,7 @@
     inner.classList.toggle('panel-wide', page === 'panels');
     inner.classList.toggle('error-wide', page === 'errors');
     inner.classList.toggle('decoration-wide', page === 'decoration');
+    $('openManualBtn').hidden = page !== 'bots';
     $('openBindBtn').hidden = page !== 'bots';
     $('refreshBtn').hidden = page !== 'bots';
     $('pageTitle').textContent = PAGE_TITLES[page][0];

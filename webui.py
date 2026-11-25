@@ -17,7 +17,15 @@ from .config import QQBotUIDConfig, display_mode
 from .qq_api import fetch_bot_profile
 from .qr_bind import poll_bind_task, create_bind_task
 from .startup import qqbotuid_runtime
-from .bots_store import BotRow, load_rows, save_rows, delete_row, save_bot_profile, upsert_bound_bot
+from .bots_store import (
+    BotRow,
+    load_rows,
+    save_rows,
+    delete_row,
+    save_bot_profile,
+    upsert_bound_bot,
+    upsert_manual_bot,
+)
 from .error_store import ErrorBot, ErrorResponse, QQBotUIDAPIError
 from .custom_config import decoration_payload, save_custom_config, delete_custom_config
 
@@ -211,6 +219,62 @@ async def qqbotuid_save_bots(data: dict[str, Any]):
     _replace_rows([r for r in data.get("bots", []) if isinstance(r, dict)])
     reloaded = await _reload_runtime()
     return {"status": 0, "msg": "ok", "data": {"bots": _rows_payload(), "reloaded": reloaded}}
+
+
+@api.post("/bots/manual")
+async def qqbotuid_add_manual_bot(data: dict[str, Any]):
+    """手动填写 AppID / Secret 添加机器人。"""
+    appid = str(data.get("appid") or "").strip()
+    secret = str(data.get("secret") or "").strip()
+    bot_name = str(data.get("bot_name") or "").strip()
+    if not appid:
+        return {"status": 1, "msg": "请填写 AppID", "data": None}
+    if not secret:
+        return {"status": 1, "msg": "请填写密钥 Secret", "data": None}
+
+    mode = display_mode(data.get("mode"))
+    enabled = data.get("enabled", True) is not False
+    created = await asyncio.to_thread(
+        upsert_manual_bot, appid, secret, "", bot_name, mode, enabled
+    )
+
+    profile_ok = False
+    try:
+        config = QQBotUIDConfig.from_config()
+        config.appid = appid
+        config.secret = secret
+        profile = await asyncio.wait_for(fetch_bot_profile(config), timeout=10)
+        if profile is not None:
+            await asyncio.to_thread(
+                save_bot_profile,
+                appid,
+                uin=profile.uin,
+                bot_name="" if bot_name else profile.bot_name,
+                avatar=profile.avatar,
+                bot_id=profile.bot_id,
+                union_openid=profile.union_openid,
+                description=profile.description,
+            )
+            profile_ok = True
+    except Exception as e:
+        logger.warning(f"[QQBotUID] 手动添加后获取机器人资料失败: {e}")
+
+    row = _find_row(appid)
+    uin = row.uin if row else ""
+    reloaded = await _reload_runtime()
+    return {
+        "status": 0,
+        "msg": "ok",
+        "data": {
+            "appid": appid,
+            "uin": uin,
+            "uin_ok": bool(uin),
+            "created": created,
+            "profile_ok": profile_ok,
+            "reloaded": reloaded,
+            "bots": _rows_payload(),
+        },
+    }
 
 
 @api.delete("/bots/{appid}")

@@ -1114,3 +1114,43 @@ select {
         bottom: 84px;
     }
 }
+
+.manual-body {
+    display: grid;
+    align-items: stretch;
+    gap: 14px;
+}
+
+.manual-body .hint {
+    margin: 0;
+    line-height: 1.6;
+}
+
+.manual-body .req {
+    color: var(--qb-red);
+    font-weight: 800;
+}
+
+.manual-enabled {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    color: var(--qb-text);
+    font-size: 12px;
+    font-weight: 700;
+}
+
+.manual-error {
+    margin: 0;
+    padding: 8px 10px;
+    border-radius: 8px;
+    background: var(--qb-red-soft);
+    color: var(--qb-red);
+    font-size: 12px;
+    line-height: 1.6;
+}
+
+.manual-error[hidden] {
+    display: none;
+}

@@ -101,6 +101,42 @@ def upsert_bound_bot(appid: str, secret: str) -> bool:
     return True
 
 
+def upsert_manual_bot(
+    appid: str,
+    secret: str,
+    uin: str = "",
+    bot_name: str = "",
+    mode: str = "WebSocket",
+    enabled: bool = True,
+) -> bool:
+    """手动添加 / 更新机器人，返回 True 表示新建，False 表示覆盖已有 AppID。"""
+    rows = load_rows()
+    for row in rows:
+        if row.appid != appid:
+            continue
+        row.secret = secret
+        if uin:
+            row.uin = uin
+        if bot_name:
+            row.bot_name = bot_name
+        row.mode = mode
+        row.enabled = enabled
+        save_rows(rows)
+        return False
+    rows.append(
+        BotRow(
+            appid=appid,
+            secret=secret,
+            uin=uin,
+            bot_name=bot_name,
+            mode=mode,
+            enabled=enabled,
+        )
+    )
+    save_rows(rows)
+    return True
+
+
 def save_bot_profile(
     appid: str,
     *,
